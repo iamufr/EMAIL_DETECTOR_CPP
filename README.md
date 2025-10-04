@@ -52,7 +52,7 @@ g++ -O3 -march=native -flto -std=c++17 -pthread EmailDetector.cpp -o EmailDetect
 - `-pthread` – POSIX threading support
 - `-flto` – Link-time optimization (optional, slower compile)
 
-**Performance:** ~72M operations/second on modern hardware
+**Performance:** ~62M operations/second on modern hardware
 
 ---
 
