@@ -126,6 +126,12 @@ public:
                c == '[' || c == ']';
     }
 
+    static constexpr bool isScanRightBoundary(unsigned char c) noexcept
+    {
+        // Right side can also end with sentence terminators
+        return isScanBoundary(c) || c == '.' || c == '!' || c == '?';
+    }
+
     static constexpr bool isQtextOrQpair(unsigned char c) noexcept
     {
         return (c >= 33 && c <= 126) && c != '\\' && c != '"';
@@ -414,53 +420,110 @@ private:
         if (start >= end)
             return false;
 
-        int colonCount = 0;
-        bool hasDoubleColon = false;
-        size_t segStart = start;
-        bool prevWasColon = false;
+        int segmentCount = 0;
+        int compressionPos = -1; // Position where :: was found
+        size_t pos = start;
+        bool hasIPv4Suffix = false;
 
-        for (size_t i = start; i <= end; ++i)
+        // Check for leading ::
+        if (pos + 1 < end && text[pos] == ':' && text[pos + 1] == ':')
         {
-            if (i == end || text[i] == ':')
+            compressionPos = 0;
+            pos += 2;
+
+            // Special case: just "::" is valid (all zeros)
+            if (pos >= end)
+                return true;
+        }
+        else if (text[pos] == ':')
+        {
+            return false; // Can't start with single :
+        }
+
+        while (pos < end)
+        {
+            size_t segStart = pos;
+            int hexDigits = 0;
+
+            // Read hex digits (max 4 per segment)
+            while (pos < end && CharacterClassifier::isHexDigit(text[pos]))
             {
-                size_t segLen = i - segStart;
-
-                if (segLen > 4)
+                ++hexDigits;
+                ++pos;
+                if (hexDigits > 4)
                     return false;
+            }
 
-                if (segLen == 0)
+            // Check if we found a segment
+            if (hexDigits > 0)
+            {
+                ++segmentCount;
+
+                // Check for IPv4 suffix (e.g., ::ffff:192.0.2.1)
+                // Must be at end and have at least one dot
+                if (pos < end && text[pos] == '.')
                 {
-                    if (prevWasColon)
+                    // Backtrack and try to parse as IPv4
+                    if (validateIPv4(text, segStart, end))
                     {
-                        if (hasDoubleColon)
-                            return false;
-                        hasDoubleColon = true;
+                        hasIPv4Suffix = true;
+                        segmentCount--; // The IPv4 counts as 2 segments
+                        segmentCount += 2;
+                        break;
+                    }
+                    else
+                    {
+                        return false;
                     }
                 }
-                else
-                {
-                    for (size_t j = segStart; j < i; ++j)
-                    {
-                        if (!CharacterClassifier::isHexDigit(text[j]))
-                            return false;
-                    }
-                }
+            }
 
-                if (i < end && text[i] == ':')
-                {
-                    colonCount++;
-                    prevWasColon = true;
-                }
-                else
-                {
-                    prevWasColon = false;
-                }
+            if (pos >= end)
+                break;
 
-                segStart = i + 1;
+            if (text[pos] == ':')
+            {
+                ++pos;
+
+                // Check for ::
+                if (pos < end && text[pos] == ':')
+                {
+                    if (compressionPos != -1)
+                        return false; // Can't have two compressions
+
+                    compressionPos = segmentCount;
+                    ++pos;
+
+                    // Trailing :: is valid
+                    if (pos >= end)
+                        break;
+                }
+                else if (hexDigits == 0)
+                {
+                    // Single : without preceding hex digits (invalid unless it's part of ::)
+                    return false;
+                }
+            }
+            else
+            {
+                // Invalid character
+                return false;
             }
         }
 
-        return colonCount <= 7;
+        // Validate total segment count
+        if (compressionPos != -1)
+        {
+            // With compression, we can have 0-7 segments
+            // The compression fills the gap to make 8 total
+            return segmentCount <= 7;
+        }
+        else
+        {
+            // Without compression, must have exactly 8 segments
+            // Or 6 segments + IPv4 suffix (which counts as 2)
+            return segmentCount == 8;
+        }
     }
 
 public:
@@ -561,7 +624,7 @@ private:
         bool validBoundaries;
     };
 
-    // FIXED: Now uses strict boundary checking
+    // Now uses strict boundary checking
     static EmailBoundaries findEmailBoundaries(const std::string &text, size_t atPos) noexcept
     {
         const size_t len = text.length();
@@ -588,11 +651,18 @@ private:
             {
                 ++end;
             }
+
+            // ADDED: Trim trailing periods from domain part
+            // This handles cases like "email@example.com." where the period is a sentence terminator
+            while (end > atPos + 1 && text[end - 1] == '.')
+            {
+                --end;
+            }
         }
 
         bool validBoundaries = true;
 
-        // FIXED: Use strict scan boundaries instead of permissive word boundaries
+        // Left boundary check
         if (start > 0)
         {
             unsigned char prevChar = text[start - 1];
@@ -602,10 +672,11 @@ private:
             }
         }
 
+        // Right boundary check - allow sentence terminators
         if (end < len)
         {
             unsigned char nextChar = text[end];
-            if (!CharacterClassifier::isScanBoundary(nextChar))
+            if (!CharacterClassifier::isScanRightBoundary(nextChar))
             {
                 validBoundaries = false;
             }
@@ -804,6 +875,14 @@ public:
             {"user@[fe80::1]", true, "IPv6 link-local"},
             {"user@[::1]", true, "IPv6 loopback"},
 
+            // IPv6 tests
+            {"user@[::1]", true, "IPv6 loopback"},
+            {"user@[::]", true, "IPv6 all zeros"},
+            {"user@[2001:db8::]", true, "IPv6 trailing compression"},
+            {"user@[::ffff:192.0.2.1]", true, "IPv4-mapped IPv6"},
+            {"user@[2001:db8:85a3::8a2e:370:7334]", true, "IPv6 with compression"},
+            {"user@[2001:0db8:0000:0000:0000:ff00:0042:8329]", true, "IPv6 full form"},
+
             // Domain variations
             {"first.last@sub.domain.co.uk", true, "Subdomain + country TLD"},
             {"user@domain-name.com", true, "Hyphen in domain"},
@@ -898,6 +977,11 @@ public:
             {"test@domain", false, {}, "No TLD"},
             {".user@domain.com", false, {}, "Starts with dot"},
             {"no emails here", false, {}, "No @ symbol"},
+
+            // Boundary tests
+            {"Contact: user@example.com.", true, {"user@example.com"}, "Period after email"},
+            {"Email user@example.com!", true, {"user@example.com"}, "Exclamation after email"},
+            {"Really? user@example.com?", true, {"user@example.com"}, "Question mark after email"},
         };
 
         int passed = 0;
