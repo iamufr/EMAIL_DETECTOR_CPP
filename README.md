@@ -33,6 +33,14 @@ For maximum performance with aggressive optimizations:
 #### GCC
 ```bash
 g++ -O3 -march=native -std=c++17 -pthread EmailDetector.cpp -o EmailDetector
+
+OR
+
+g++ -O3 -march=native -flto -DNDEBUG -std=c++17 -pthread EmailDetector.cpp -o EmailDetector
+
+OR
+
+g++ -O3 -march=native -flto -DNDEBUG -fno-exceptions -fno-rtti -std=c++17 -pthread EmailDetector.cpp -o EmailDetector
 ```
 
 #### Clang
