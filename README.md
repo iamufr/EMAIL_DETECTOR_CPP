@@ -30,16 +30,21 @@ A **production-grade email detection library** written in modern C++ with perfor
 
 For maximum performance with aggressive optimizations:
 
-#### GCC
+#### GCC 
+**For development:**
 ```bash
 g++ -O3 -march=native -std=c++17 -pthread EmailDetector.cpp -o EmailDetector
+```
 
-OR
-
+#### GCC 
+**For production/benchmarking:**
+```bash
 g++ -O3 -march=native -flto -DNDEBUG -std=c++17 -pthread EmailDetector.cpp -o EmailDetector
+```
 
-OR
-
+#### GCC 
+**Even More Aggressive (if you want maximum speed)**
+```bash
 g++ -O3 -march=native -flto -DNDEBUG -fno-exceptions -fno-rtti -std=c++17 -pthread EmailDetector.cpp -o EmailDetector
 ```
 
