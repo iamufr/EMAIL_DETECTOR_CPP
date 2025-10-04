@@ -42,12 +42,6 @@ g++ -O3 -march=native -std=c++17 -pthread EmailDetector.cpp -o EmailDetector
 g++ -O3 -march=native -flto -DNDEBUG -std=c++17 -pthread EmailDetector.cpp -o EmailDetector
 ```
 
-#### GCC 
-**Even More Aggressive (if you want maximum speed)**
-```bash
-g++ -O3 -march=native -flto -DNDEBUG -fno-exceptions -fno-rtti -std=c++17 -pthread EmailDetector.cpp -o EmailDetector
-```
-
 #### Clang
 ```bash
 clang++ -O3 -march=native -std=c++17 -pthread EmailDetector.cpp -o EmailDetector
