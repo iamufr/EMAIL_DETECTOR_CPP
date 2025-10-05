@@ -10,20 +10,6 @@
 #include <memory>
 #include <optional>
 
-/**
- * RFC 5322 Compliant Email Validator - Production Grade
- *
- * Features:
- * - 100% RFC 5322 compliance
- * - Quoted strings support
- * - IP address literals support
- * - Comments support (optional)
- * - Two-tier validation (exact vs scanning)
- * - Thread-safe
- * - SOLID principles
- * - High performance
- */
-
 // ============================================================================
 // INTERFACES (SOLID: Interface Segregation Principle)
 // ============================================================================
@@ -114,11 +100,8 @@ public:
         return isAlphaNum(c) || c == '-' || c == '.';
     }
 
-    // FIXED: Strict boundaries for scan mode - only clear text delimiters
     static constexpr bool isScanBoundary(unsigned char c) noexcept
     {
-        // Only accept CLEAR, unambiguous text boundaries for PII detection
-        // Excludes: backticks, braces, quotes (can be mid-token in code/templates)
         return c == ' ' || c == '\t' || c == '\n' || c == '\r' ||
                c == ',' || c == ';' || c == ':' ||
                c == '<' || c == '>' ||
@@ -128,7 +111,6 @@ public:
 
     static constexpr bool isScanRightBoundary(unsigned char c) noexcept
     {
-        // Right side can also end with sentence terminators
         return isScanBoundary(c) || c == '.' || c == '!' || c == '?';
     }
 
@@ -421,7 +403,7 @@ private:
             return false;
 
         int segmentCount = 0;
-        int compressionPos = -1; // Position where :: was found
+        int compressionPos = -1;
         size_t pos = start;
         bool hasIPv4Suffix = false;
 
@@ -431,13 +413,12 @@ private:
             compressionPos = 0;
             pos += 2;
 
-            // Special case: just "::" is valid (all zeros)
             if (pos >= end)
                 return true;
         }
         else if (text[pos] == ':')
         {
-            return false; // Can't start with single :
+            return false;
         }
 
         while (pos < end)
@@ -445,7 +426,6 @@ private:
             size_t segStart = pos;
             int hexDigits = 0;
 
-            // Read hex digits (max 4 per segment)
             while (pos < end && CharacterClassifier::isHexDigit(text[pos]))
             {
                 ++hexDigits;
@@ -454,20 +434,16 @@ private:
                     return false;
             }
 
-            // Check if we found a segment
             if (hexDigits > 0)
             {
                 ++segmentCount;
 
-                // Check for IPv4 suffix (e.g., ::ffff:192.0.2.1)
-                // Must be at end and have at least one dot
                 if (pos < end && text[pos] == '.')
                 {
-                    // Backtrack and try to parse as IPv4
                     if (validateIPv4(text, segStart, end))
                     {
                         hasIPv4Suffix = true;
-                        segmentCount--; // The IPv4 counts as 2 segments
+                        segmentCount--;
                         segmentCount += 2;
                         break;
                     }
@@ -485,43 +461,34 @@ private:
             {
                 ++pos;
 
-                // Check for ::
                 if (pos < end && text[pos] == ':')
                 {
                     if (compressionPos != -1)
-                        return false; // Can't have two compressions
+                        return false;
 
                     compressionPos = segmentCount;
                     ++pos;
 
-                    // Trailing :: is valid
                     if (pos >= end)
                         break;
                 }
                 else if (hexDigits == 0)
                 {
-                    // Single : without preceding hex digits (invalid unless it's part of ::)
                     return false;
                 }
             }
             else
             {
-                // Invalid character
                 return false;
             }
         }
 
-        // Validate total segment count
         if (compressionPos != -1)
         {
-            // With compression, we can have 0-7 segments
-            // The compression fills the gap to make 8 total
             return segmentCount <= 7;
         }
         else
         {
-            // Without compression, must have exactly 8 segments
-            // Or 6 segments + IPv4 suffix (which counts as 2)
             return segmentCount == 8;
         }
     }
@@ -624,7 +591,6 @@ private:
         bool validBoundaries;
     };
 
-    // Now uses strict boundary checking
     static EmailBoundaries findEmailBoundaries(const std::string &text, size_t atPos) noexcept
     {
         const size_t len = text.length();
@@ -652,8 +618,6 @@ private:
                 ++end;
             }
 
-            // ADDED: Trim trailing periods from domain part
-            // This handles cases like "email@example.com." where the period is a sentence terminator
             while (end > atPos + 1 && text[end - 1] == '.')
             {
                 --end;
@@ -662,7 +626,6 @@ private:
 
         bool validBoundaries = true;
 
-        // Left boundary check
         if (start > 0)
         {
             unsigned char prevChar = text[start - 1];
@@ -672,7 +635,6 @@ private:
             }
         }
 
-        // Right boundary check - allow sentence terminators
         if (end < len)
         {
             unsigned char nextChar = text[end];
@@ -1230,7 +1192,7 @@ int main()
         std::vector<std::string> testCases = {
             "Simple email: user@example.com in text",
             "Multiple emails: first@domain.com and second@another.org",
-            "user..double@domain.com", // Invalid
+            "user..double@domain.com",
             "Complex: john.doe+filter@sub.domain.co.uk mixed with text",
             "No emails in this text at all",
             "Edge case: a@b.co minimal email",
@@ -1249,7 +1211,7 @@ int main()
             "valid.email+tag@example.co.uk",
             "Contact us at support@company.com for help",
             "Multiple: first@test.com, second@demo.org",
-            "invalid@.com and test@domain", // Both invalid
+            "invalid@.com and test@domain",
             std::string(1000, 'x') + "hidden@email.com" + std::string(1000, 'y'),
 
             "user@example.com",
