@@ -919,25 +919,292 @@ public:
         };
 
         std::vector<TestCase> tests = {
-            {"Contact us at support@company.com for help", true, {"support@company.com"}, "Email in sentence"},
-            {"Send to: user@example.com, admin@test.org", true, {"user@example.com", "admin@test.org"}, "Multiple emails"},
+            // Multiple consecutive invalid characters
+            {"text###@@@user@domain.com", true, {"user@domain.com"}, "Multiple invalid chars before @"},
+            {"text@user.com@domain.", true, {"text@user.com"}, "Legal email before second @"},
+            {"text@user.com@domain.in", true, {"text@user.com", "com@domain.in"}, "Two legal emails"},
+            {"text!!!%%%$$$user@domain.com", true, {"user@domain.com"}, "Mixed invalid prefix"},
+            {"user....email@domain.com", true, {"email@domain.com"}, "Multiple dots before valid part"},
+            {"user...@domain.com", false, {}, "Only dots before @"},
+            {"user@domain.com@", true, {"user@domain.com"}, "@ at the end"},
+
+            // Valid Special Characters just befor @
+            {"user!@domain.com", true, {"user!@domain.com"}, "! before @ is legal according to RFC rule"},
+            {"user#@domain.com", true, {"user#@domain.com"}, "# before @ is legal according to RFC rule"},
+            {"user$@domain.com", true, {"user$@domain.com"}, "$ before @ is legal according to RFC rule"},
+            {"user%@domain.com", true, {"user%@domain.com"}, "% before @ is legal according to RFC rule"},
+            {"user&@domain.com", true, {"user&@domain.com"}, "& before @ is legal according to RFC rule"},
+            {"user'@domain.com", true, {"user'@domain.com"}, "' before @ is legal according to RFC rule"},
+            {"user*@domain.com", true, {"user*@domain.com"}, "* before @ is legal according to RFC rule"},
+            {"user+@domain.com", true, {"user+@domain.com"}, "+ before @ is legal according to RFC rule"},
+            {"user-@domain.com", true, {"user-@domain.com"}, "- before @ is legal according to RFC rule"},
+            {"user/@domain.com", true, {"user/@domain.com"}, "/ before @ is legal according to RFC rule"},
+            {"user=@domain.com", true, {"user=@domain.com"}, "= before @ is legal according to RFC rule"},
+            {"user?@domain.com", true, {"user?@domain.com"}, "? before @ is legal according to RFC rule"},
+            {"user^@domain.com", true, {"user^@domain.com"}, "^ before @ is legal according to RFC rule"},
+            {"user_@domain.com", true, {"user_@domain.com"}, "_ before @ is legal according to RFC rule"},
+            {"user`@domain.com", true, {"user`@domain.com"}, "` before @ is legal according to RFC rule"},
+            {"user{@domain.com", true, {"user{@domain.com"}, "{ before @ is legal according to RFC rule"},
+            {"user|@domain.com", true, {"user|@domain.com"}, "| before @ is legal according to RFC rule"},
+            {"user}@domain.com", true, {"user}@domain.com"}, "} before @ is legal according to RFC rule"},
+            {"user~@domain.com", true, {"user~@domain.com"}, "~ before @ is legal according to RFC rule"},
+
+            // InValid Special Characters just befor @
+            {"user @domain.com", false, {}, "space before @ is illegal in an unquoted local-part"},
+            {"user\"@domain.com", false, {}, "\" (double quote) is illegal unless the entire local-part is a quoted-string (e.g. \"...\")"},
+            {"user(@domain.com", false, {}, "( before @ is illegal in an unquoted local-part (parentheses used for comments)"},
+            {"user)@domain.com", false, {}, ") before @ is illegal in an unquoted local-part (parentheses used for comments)"},
+            {"user,@domain.com", false, {}, ", before @ is illegal in an unquoted local-part"},
+            {"user:@domain.com", false, {}, ": before @ is illegal in an unquoted local-part"},
+            {"user;@domain.com", false, {}, "; before @ is illegal in an unquoted local-part"},
+            {"user<@domain.com", false, {}, "< before @ is illegal in an unquoted local-part"},
+            {"user>@domain.com", false, {}, "> before @ is illegal in an unquoted local-part"},
+            {"user\\@domain.com", false, {}, "\\ (backslash) is illegal unquoted; allowed only inside quoted-strings as an escape"},
+            {"user[@domain.com", false, {}, "[ before @ is illegal in an unquoted local-part"},
+            {"user]@domain.com", false, {}, "] before @ is illegal in an unquoted local-part"},
+            {"user@@domain.com", false, {}, "additional @ inside the local-part is illegal (only one @ separates local and domain)"},
+            {"user.@domain.com", false, {}, "trailing dot in local-part is illegal (dot cannot start or end the local-part)"},
+            {"user\\r@domain.com", false, {}, "CR (carriage return) is illegal (control characters are not allowed)"},
+            {"user\\n@domain.com", false, {}, "LF (line feed/newline) is illegal (control characters are not allowed)"},
+            {"user\\t@domain.com", false, {}, "TAB is illegal (control/whitespace characters are not allowed)"},
+
+            // Multiple Valid emails together — first valid, second valid (legal special character or characters before @)
+            {"text123@user.com!@domain.in", true, {"text123@user.com", "com!@domain.in"}, "'!' before @ is legal (atext); second local-part is 'com!' which is RFC-valid"},
+            {"123text@user.com#@domain.in", true, {"123text@user.com", "com#@domain.in"}, "'#' before @ is legal (atext); second local-part is 'com#' which is RFC-valid"},
+            {"365text@user.com$@domain.in", true, {"365text@user.com", "com$@domain.in"}, "'$' before @ is legal (atext); second local-part is 'com$' which is RFC-valid"},
+            {"text@user.com%@domain.in", true, {"text@user.com", "com%@domain.in"}, "'%' before @ is legal (atext); second local-part is 'com%' which is RFC-valid"},
+            {"text@user.com&@domain.in", true, {"text@user.com", "com&@domain.in"}, "'&' before @ is legal (atext); second local-part is 'com&' which is RFC-valid"},
+            {"text@user.com'@domain.in", true, {"text@user.com", "com'@domain.in"}, "''' before @ is legal (atext); second local-part is \"com'\" which is RFC-valid"},
+            {"text@user.com*@domain.in", true, {"text@user.com", "com*@domain.in"}, "'*' before @ is legal (atext); second local-part is 'com*' which is RFC-valid"},
+            {"text@user.com+@domain.in", true, {"text@user.com", "com+@domain.in"}, "'+' before @ is legal (atext); second local-part is 'com+' which is RFC-valid"},
+            {"text@user.com-@domain.in", true, {"text@user.com", "com-@domain.in"}, "'-' before @ is legal (atext); second local-part is 'com-' which is RFC-valid"},
+            {"text@user.com/@domain.in", true, {"text@user.com", "com/@domain.in"}, "'/' before @ is legal (atext); second local-part is 'com/' which is RFC-valid"},
+            {"text@user.com=@domain.in", true, {"text@user.com", "com=@domain.in"}, "'=' before @ is legal (atext); second local-part is 'com=' which is RFC-valid"},
+            {"text@user.com?@domain.in", true, {"text@user.com", "com?@domain.in"}, "'?' before @ is legal (atext); second local-part is 'com?' which is RFC-valid"},
+            {"text@user.com^@domain.in", true, {"text@user.com", "com^@domain.in"}, "'^' before @ is legal (atext); second local-part is 'com^' which is RFC-valid"},
+            {"text@user.com_@domain.in", true, {"text@user.com", "com_@domain.in"}, "'_' before @ is legal (atext); second local-part is 'com_' which is RFC-valid"},
+            {"text@user.com`@domain.in", true, {"text@user.com", "com`@domain.in"}, "'`' before @ is legal (atext); second local-part is 'com`' which is RFC-valid"},
+            {"text@user.com{@domain.in", true, {"text@user.com", "com{@domain.in"}, "'{' before @ is legal (atext); second local-part is 'com{' which is RFC-valid"},
+            {"text@user.com|@domain.in", true, {"text@user.com", "com|@domain.in"}, "'|' before @ is legal (atext); second local-part is 'com|' which is RFC-valid"},
+            {"text@user.com}@domain.in", true, {"text@user.com", "com}@domain.in"}, "'}' before @ is legal (atext); second local-part is 'com}' which is RFC-valid"},
+            {"text@user.com~@domain.in", true, {"text@user.com", "com~@domain.in"}, "'~' before @ is legal (atext); second local-part is 'com~' which is RFC-valid"},
+            {"text@user.com!!@domain.in", true, {"text@user.com", "com!!@domain.in"}, "'!!' before @ is legal (atext); second local-part is 'com!' which is RFC-valid"},
+            {"text@user.com##@domain.in", true, {"text@user.com", "com##@domain.in"}, "'##' before @ is legal (atext); second local-part is 'com#' which is RFC-valid"},
+            {"text@user.com$$@domain.in", true, {"text@user.com", "com$$@domain.in"}, "'$$' before @ is legal (atext); second local-part is 'com$' which is RFC-valid"},
+            {"text@user.com%%@domain.in", true, {"text@user.com", "com%%@domain.in"}, "'%%' before @ is legal (atext); second local-part is 'com%' which is RFC-valid"},
+            {"text@user.com&&@domain.in", true, {"text@user.com", "com&&@domain.in"}, "'&&' before @ is legal (atext); second local-part is 'com&' which is RFC-valid"},
+            {"text@user.com''@domain.in", true, {"text@user.com", "com''@domain.in"}, "'''' before @ is legal (atext); second local-part is \"com'\" which is RFC-valid"},
+            {"text@user.com**@domain.in", true, {"text@user.com", "com**@domain.in"}, "'**' before @ is legal (atext); second local-part is 'com*' which is RFC-valid"},
+            {"text@user.com++@domain.in", true, {"text@user.com", "com++@domain.in"}, "'++' before @ is legal (atext); second local-part is 'com+' which is RFC-valid"},
+            {"text@user.com--@domain.in", true, {"text@user.com", "com--@domain.in"}, "'--' before @ is legal (atext); second local-part is 'com-' which is RFC-valid"},
+            {"text@user.com//@domain.in", true, {"text@user.com", "com//@domain.in"}, "'//' before @ is legal (atext); second local-part is 'com/' which is RFC-valid"},
+            {"text@user.com==@domain.in", true, {"text@user.com", "com==@domain.in"}, "'==' before @ is legal (atext); second local-part is 'com=' which is RFC-valid"},
+            {"text@user.com??@domain.in", true, {"text@user.com", "com??@domain.in"}, "'?\?' before @ is legal (atext); second local-part is 'com?' which is RFC-valid"},
+            {"text@user.com^^@domain.in", true, {"text@user.com", "com^^@domain.in"}, "'^^' before @ is legal (atext); second local-part is 'com^' which is RFC-valid"},
+            {"text@user.com__@domain.in", true, {"text@user.com", "com__@domain.in"}, "'__' before @ is legal (atext); second local-part is 'com_' which is RFC-valid"},
+            {"text@user.com``@domain.in", true, {"text@user.com", "com``@domain.in"}, "'``' before @ is legal (atext); second local-part is 'com`' which is RFC-valid"},
+            {"text@user.com{{@domain.in", true, {"text@user.com", "com{{@domain.in"}, "'{{' before @ is legal (atext); second local-part is 'com{' which is RFC-valid"},
+            {"text@user.com||@domain.in", true, {"text@user.com", "com||@domain.in"}, "'||' before @ is legal (atext); second local-part is 'com|' which is RFC-valid"},
+            {"text@user.com}}@domain.in", true, {"text@user.com", "com}}@domain.in"}, "'}}' before @ is legal (atext); second local-part is 'com}' which is RFC-valid"},
+            {"text@user.com~~@domain.in", true, {"text@user.com", "com~~@domain.in"}, "'~~' before @ is legal (atext); second local-part is 'com~' which is RFC-valid"},
+
+            // Multiple invalid emails together — first valid, second invalid (illegal before @)
+            {"text@user.com @domain.in", true, {"text@user.com"}, "space before @ is illegal in unquoted local-part"},
+            {"text@user.com\"@domain.in", true, {"text@user.com"}, "\" (double quote) is illegal unless the local-part is fully quoted"},
+            {"text@user.com(@domain.in", true, {"text@user.com"}, "'(' before @ is illegal (parentheses denote comments)"},
+            {"text@user.com)@domain.in", true, {"text@user.com"}, "')' before @ is illegal (parentheses denote comments)"},
+            {"text@user.com,@domain.in", true, {"text@user.com"}, "',' before @ is illegal in an unquoted local-part"},
+            {"text@user.com:@domain.in", true, {"text@user.com"}, "':' before @ is illegal in an unquoted local-part"},
+            {"text@user.com;@domain.in", true, {"text@user.com"}, "';' before @ is illegal in an unquoted local-part"},
+            {"text@user.com<@domain.in", true, {"text@user.com"}, "'<' before @ is illegal in an unquoted local-part"},
+            {"text@user.com>@domain.in", true, {"text@user.com"}, "'>' before @ is illegal in an unquoted local-part"},
+            {"text@user.com\\@domain.in", true, {"text@user.com"}, "'\\' is illegal unless used inside a quoted-string (escaped)"},
+            {"text@user.com[@domain.in", true, {"text@user.com"}, "'[' before @ is illegal in an unquoted local-part"},
+            {"text@user.com]@domain.in", true, {"text@user.com"}, "']' before @ is illegal in an unquoted local-part"},
+            {"text@user.com@@domain.in", true, {"text@user.com"}, "double '@' is illegal — only one @ allowed per address"},
+            {"text@user.com.@domain.in", true, {"text@user.com"}, "dot cannot appear at the end of the local-part (illegal trailing dot)"},
+            {"text@user.com\\r@domain.in", true, {"text@user.com"}, "carriage return (CR) is illegal — control characters not allowed"},
+            {"text@user.com\\n@domain.in", true, {"text@user.com"}, "line feed (LF) is illegal — control characters not allowed"},
+            {"text@user.com\\t@domain.in", true, {"text@user.com"}, "horizontal tab (TAB) is illegal — whitespace not allowed"},
+
+            // Multiple valid email-like sequences with legal special chars before '@'
+            {"In this paragraph there are some emails first@domain.com#@second!@test.org!@alpha.in please find out them...!", true, {"first@domain.com", "second!@test.org", "test.org!@alpha.in"}, "Each local-part contains valid atext characters ('#', '!') before '@' — all RFC 5322 compliant"},
+            {"In this paragraph there are some emails alice@company.net+@bob$@service.co$@example.org please find out them...!", true, {"alice@company.net", "bob$@service.co", "service.co$@example.org"}, "Multiple addresses joined; '+', '$' are legal atext characters in local-part"},
+            {"In this paragraph there are some emails one.user@site.com*@two#@host.org*@third-@example.io please find out them...!", true, {"one.user@site.com", "two#@host.org", "third-@example.io"}, "Each local-part uses legal atext chars ('*', '#', '-') before '@'"},
+            {"In this paragraph there are some emails foo@bar.com!!@baz##@qux$$@quux.in please find out them...!", true, {"foo@bar.com", "qux$$@quux.in"}, "Double consecutive legal characters ('!!', '##', '$$') are RFC-valid though uncommon"},
+            {"In this paragraph there are some emails alpha@beta.com+*@gamma/delta.com+*@eps-@zeta.co please find out them...!", true, {"alpha@beta.com", "eps-@zeta.co"}, "Mix of valid symbols '+', '*', '/', '-' in local-parts — all atext-legal"},
+            {"In this paragraph there are some emails u1@d1.org^@u2_@d2.net`@u3{@d3.io please find out them...!", true, {"u1@d1.org", "u2_@d2.net", "u3{@d3.io"}, "Local-parts include '^', '_', '`', '{' — all RFC-allowed characters"},
+            {"In this paragraph there are some emails name@dom.com|@name2@dom2.com|@name3~@dom3.org please find out them...!", true, {"name@dom.com", "name2@dom2.com", "name3~@dom3.org"}, "Legal special chars ('|', '~') appear before '@' — still RFC-valid"},
+            {"In this paragraph there are some emails me.last@my.org-@you+@your.org-@them*@their.io please find out them...!", true, {"me.last@my.org", "you+@your.org", "them*@their.io"}, "Combination of '-', '+', '*' in local-part are permitted under RFC 5322"},
+            {"In this paragraph there are some emails p@q.com=@r#@s$@t%u.org please find out them...!", true, {"p@q.com"}, "Chained valid addresses with '=', '#', '$', '%' — all within atext definition"},
+            {"In this paragraph there are some emails first@domain.com++@second@@test.org--@alpha~~@beta.in please find out them...!", true, {"first@domain.com", "second++@test.org", "alpha~~@beta.in"}, "Valid plus, dash, and tilde used before '@'; RFC 5322-legal though rarely used"},
+
+            // Mixed valid/invalid in local part
+            {"user..name@domain.com", true, {"name@domain.com"}, "Consecutive dots (standalone)"},
+            {"text user..name@domain.com text", true, {"name@domain.com"}, "Consecutive dots (in text)"},
+            {"text username.@domain.com text", false, {}, "Dot before @"},
+            {"user.-name@domain.com", true, {"user.-name@domain.com"}, "Dot-hyphen sequence"},
+            {"user-.name@domain.com", true, {"user-.name@domain.com"}, "Hyphen-dot sequence"},
+            {"user.+name@domain.com", true, {"user.+name@domain.com"}, "Dot-plus sequence"},
+            {"user+.name@domain.com", true, {"user+.name@domain.com"}, "Plus-dot sequence"},
+
+            // Invalid character combinations forcing skip
+            {"user#$%name@domain.com", true, {"name@domain.com"}, "Multiple special chars in middle"},
+            {"user#.name@domain.com", true, {"name@domain.com"}, "Hash-dot forces skip"},
+            {"user.#name@domain.com", true, {"name@domain.com"}, "Dot-hash forces skip"},
+            {"user!@#name@domain.com", true, {"name@domain.com"}, "Multiple operators"},
+
+            // Boundary with various terminators
+            {"Email:user@domain.com;note", true, {"user@domain.com"}, "Semicolon terminator"},
+            {"List[user@domain.com]end", true, {"user@domain.com"}, "Bracket terminators"},
+            {"Text(user@domain.com)more", true, {"user@domain.com"}, "Parenthesis terminators"},
+            {"Start<user@domain.com>end", true, {"user@domain.com"}, "Angle bracket terminators"},
+
+            // Leading invalid character patterns
+            {"$user@domain.com", true, {"user@domain.com"}, "Single $ prefix"},
+            {"$$user@domain.com", true, {"user@domain.com"}, "Double $ prefix"},
+            {"$#!user@domain.com", true, {"user@domain.com"}, "Mixed special prefix"},
+            {".user@domain.com", true, {"user@domain.com"}, "Standalone dot prefix"},
+            {"text .user@domain.com", true, {"user@domain.com"}, "Space then dot prefix"},
+
+            // Multiple @ symbols
+            {"user@@domain.com", false, {}, "Double @ (invalid)"},
+            {"user@domain@com", false, {}, "@ in domain (invalid)"},
+            {"first@domain.com@second@test.org", true, {"first@domain.com", "second@test.org"}, "Multiple @ in sequence"},
+            {"user@domain.com then admin@test.org", true, {"user@domain.com", "admin@test.org"}, "Two valid separate emails"},
+
+            // Long local parts with issues
+            {"a" + std::string(70, 'x') + "@domain.com", false, {}, "Local part too long (>64)"},
+            {"prefix###" + std::string(60, 'x') + "@domain.com", false, {}, "Long part after skip"},
+            {"x" + std::string(63, 'a') + "@domain.com", true, {"x" + std::string(63, 'a') + "@domain.com"}, "Exactly 64 chars (valid)"},
+
+            // Hyphen positions in local part
+            {"-user@domain.com", true, {"-user@domain.com"}, "Leading hyphen in local (allowed in scan)"},
+            {"user-@domain.com", true, {"user-@domain.com"}, "Trailing hyphen in local"},
+            {"u-s-e-r@domain.com", true, {"u-s-e-r@domain.com"}, "Multiple hyphens"},
+            {"user---name@domain.com", true, {"user---name@domain.com"}, "Consecutive hyphens"},
+
+            // Domain edge cases
+            {"user@d.co", true, {"user@d.co"}, "Single char subdomain"},
+            {"user@domain.c", true, {"user@domain.c"}, "Single char TLD"},
+            {"user@domain.123", true, {"user@domain.123"}, "Numeric TLD"},
+            {"user@sub.domain.co.uk", true, {"user@sub.domain.co.uk"}, "Multiple subdomains"},
+            {"user@123.456.789.012", true, {"user@123.456.789.012"}, "All numeric domain"},
+
+            // Invalid domain patterns
+            {"user@domain", false, {}, "Missing TLD"},
+            {"user@domain.", false, {}, "Trailing dot in domain"},
+            {"user@.domain.com", false, {}, "Leading dot in domain"},
+            {"user@domain..com", false, {}, "Consecutive dots in domain"},
+            {"user@-domain.com", false, {}, "Leading hyphen in domain label"},
+            {"user@domain-.com", false, {}, "Trailing hyphen in domain label"},
+
+            // Whitespace handling
+            {"user @domain.com", false, {}, "Space before @"},
+            {"user@ domain.com", false, {}, "Space after @"},
+            {"user@domain .com", false, {}, "Space in domain"},
+            {"user\t@domain.com", false, {}, "Tab before @"},
+            {"user@domain.com\ntext", true, {"user@domain.com"}, "Newline after email"},
+
+            // Mixed valid emails with noise
+            {"Emails: a@b.co, x@y.org", true, {"a@b.co", "x@y.org"}, "Two minimal emails"},
+            {"Contact: user+tag@site.com", true, {"user+tag@site.com"}, "Plus addressing"},
+            {"Reply to user_name@example.com.", true, {"user_name@example.com"}, "Underscore in local"},
+
+            // Tricky prefix patterns
+            {"value=user@domain.com", true, {"user@domain.com"}, "Equals before email"},
+            {"price$100user@domain.com", true, {"user@domain.com"}, "Dollar with digits prefix"},
+            {"50%user@domain.com", true, {"user@domain.com"}, "Percent after digit"},
+            {"user#1@domain.com", true, {"1@domain.com"}, "Hash in middle with digit"},
+
+            // Combination attacks (valid chars in invalid positions)
+            {"..user@domain.com", true, {"user@domain.com"}, "Double dot prefix"},
+            {"user..@domain.com", false, {}, "Double dot suffix"},
+            {".user.@domain.com", false, {}, "Dots at both ends"},
+            {"text ..user@domain.com", false, {}, "Space + double dot prefix"},
+
+            // Plus sign edge cases
+            {"user+@domain.com", true, {"user+@domain.com"}, "Plus at end of local"},
+            {"+user@domain.com", true, {"+user@domain.com"}, "Plus at start of local"},
+            {"user++tag@domain.com", true, {"user++tag@domain.com"}, "Consecutive plus signs"},
+            {"user+tag+extra@domain.com", true, {"user+tag+extra@domain.com"}, "Multiple plus tags"},
+
+            // Dot positioning edge cases
+            {"u.s.e.r@domain.com", true, {"u.s.e.r@domain.com"}, "Many single char segments"},
+            {"user.@domain.com", false, {}, "Dot immediately before @"},
+            {"text user.@domain.com", false, {}, "Dot before @ in text"},
+
+            // IP literal patterns (should be rejected in scan mode)
+            {"user@[192.168.1.1]", false, {}, "IPv4 literal (scan mode)"},
+            {"user@[::1]", false, {}, "IPv6 literal (scan mode)"},
+            {"text user@[10.0.0.1] more", false, {}, "IPv4 in text (scan mode)"},
+
+            // Very short emails
+            {"a@b.co", true, {"a@b.co"}, "Minimal valid email"},
+            {"a@b.c", true, {"a@b.c"}, "Minimal with single char TLD"},
+            {"ab@cd.ef", true, {"ab@cd.ef"}, "Two char everything"},
+
+            // Numbers in various positions
+            {"123@domain.com", true, {"123@domain.com"}, "All numeric local"},
+            {"user@123.com", true, {"user@123.com"}, "Numeric subdomain"},
+            {"user123@domain456.com789", true, {"user123@domain456.com789"}, "Numbers everywhere"},
+            {"2user@domain.com", true, {"2user@domain.com"}, "Starting with number"},
+
+            // Mixed case sensitivity
+            {"User@Domain.COM", true, {"User@Domain.COM"}, "Mixed case (preserved)"},
+            {"USER@DOMAIN.COM", true, {"USER@DOMAIN.COM"}, "All uppercase"},
+
+            // Special recovery scenarios
+            {"###user@domain.com", true, {"user@domain.com"}, "Hash prefix recovery"},
+            {"$$$user@domain.com", true, {"user@domain.com"}, "Dollar prefix recovery"},
+            {"!!!user@domain.com", true, {"user@domain.com"}, "Exclamation prefix recovery"},
+            {"user###name@domain.com", true, {"name@domain.com"}, "Hash in middle recovery"},
+
+            // Empty and minimal cases
+            {"@", false, {}, "Just @ symbol"},
+            {"@@", false, {}, "Double @ only"},
+            {"user@", false, {}, "Missing domain entirely"},
+            {"@domain.com", false, {}, "Missing local entirely"},
+
+            // Malformed that looks valid initially
+            {"user@#domain.com", false, {}, "Extra @ at start"},
+            {"user.@domain.com@", false, {}, "Invalid local"},
+
+            // Real-world problematic patterns
+            {"price=$19.99,contact:user@domain.com", true, {"user@domain.com"}, "After price"},
+            {"email='user@domain.com'", true, {"user@domain.com"}, "Single quoted"},
+            {"mailto:user@domain.com", true, {"user@domain.com"}, "After mailto:"},
+            {"http://user@domain.com", true, {"user@domain.com"}, "After http://"},
+
+            // Consecutive operator patterns
+            {"user+-name@domain.com", true, {"user+-name@domain.com"}, "Plus-hyphen combo"},
+            {"user-+name@domain.com", true, {"user-+name@domain.com"}, "Hyphen-plus combo"},
+            {"user_-name@domain.com", true, {"user_-name@domain.com"}, "Underscore-hyphen"},
+            {"user._name@domain.com", true, {"user._name@domain.com"}, "Dot-underscore"},
+
+            // Non-ASCII and extended characters (should fail)
+            {"userΓÑó@domain.com", false, {}, "Unicode in local part"},
+            {"user@domainΓÑó.com", false, {}, "Unicode in domain"},
+            {"user@domain.c├▓m", false, {}, "Unicode in TLD"},
+
+            // Common email scanning
+            {"Contact us at support@company.co.in for help", true, {"support@company.co.in"}, "Email in sentence"},
+            {"Send to: user@example.com, admin@test.co.org", true, {"user@example.com", "admin@test.co.org"}, "Multiple emails"},
             {"Email: test@domain.co.uk", true, {"test@domain.co.uk"}, "After colon"},
-            {"<user@example.com>", true, {"user@example.com"}, "In angle brackets"},
-            {"(contact: admin@site.com)", true, {"admin@site.com"}, "In parentheses"},
+            {"<user@example.co.in>", true, {"user@example.co.in"}, "In angle brackets"},
+            {"(contact: admin@site.co.uk)", true, {"admin@site.co.uk"}, "In parentheses"},
 
             // Proper boundary handling for conservative scanning
-            {"That's john'semail@example.com works", false, {}, "Apostrophe blocks extraction"},
-            {"user%test@domain.com", false, {}, "% blocks extraction"},
-            {"user!name@test.com", false, {}, "! blocks extraction"},
-            {"user#admin@example.com", false, {}, "# blocks extraction"},
+            {"That's john'semail@example.com works", true, {"semail@example.com"}, "Apostrophe separate extraction"},
+            {"user%test@domain.com", true, {"test@domain.com"}, "% separate extraction"},
+            {"user!name@test.com", true, {"name@test.com"}, "! separate extraction"},
+            {"user#admin@example.com", true, {"admin@example.com"}, "# separate extraction"},
 
             // IP literals not extracted in scan mode
             {"Server: user@[192.168.1.1]", false, {}, "IP literal in scan mode"},
 
             // Standard invalid cases
-            {"user..double@domain.com", false, {}, "Consecutive dots"},
             {"test@domain", false, {}, "No TLD"},
-            {".user@domain.com", false, {}, "Starts with dot"},
             {"no emails here", false, {}, "No @ symbol"},
 
             // Boundary tests
