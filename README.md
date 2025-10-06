@@ -39,7 +39,7 @@ g++ -O3 -march=native -std=c++17 -pthread EmailDetector.cpp -o EmailDetector
 #### GCC 
 **For production/benchmarking:**
 ```bash
-g++ -O3 -march=native -flto -DNDEBUG -std=c++17 -pthread EmailDetector.cpp -o EmailDetector
+g++ -O3 -march=native -flto=auto -DNDEBUG -std=c++17 -pthread EmailDetector.cpp -o EmailDetector
 ```
 
 #### Clang
