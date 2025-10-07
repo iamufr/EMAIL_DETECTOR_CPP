@@ -923,7 +923,7 @@ public:
             {"text###@@@user@domain.com", true, {"user@domain.com"}, "Multiple invalid chars before @"},
             {"text@user.com@domain.", true, {"text@user.com"}, "Legal email before second @"},
             {"text@user.com@domain.in", true, {"text@user.com", "com@domain.in"}, "Two legal emails"},
-            {"text!!!%%%$$$user@domain.com", true, {"user@domain.com"}, "Mixed invalid prefix"},
+            {"text!!!%(%)%$$$user@domain.com", true, {"user@domain.com"}, "Mixed invalid prefix"},
             {"user....email@domain.com", true, {"email@domain.com"}, "Multiple dots before valid part"},
             {"user...@domain.com", false, {}, "Only dots before @"},
             {"user@domain.com@", true, {"user@domain.com"}, "@ at the end"},
