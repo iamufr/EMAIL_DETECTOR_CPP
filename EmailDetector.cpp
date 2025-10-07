@@ -927,6 +927,9 @@ public:
             {"user....email@domain.com", true, {"email@domain.com"}, "Multiple dots before valid part"},
             {"user...@domain.com", false, {}, "Only dots before @"},
             {"user@domain.com@", true, {"user@domain.com"}, "@ at the end"},
+            {"27 age and alphatyicbnkdleo$#-=+xkthes123fd56569565@gmail.com and othere data missing...!", true, {"xkthes123fd56569565@gmail.com"}, "Find the alphabet or dight if any invalid special character found before @"},
+            {"27 age and alphatyicbnkdleo$#-=+xkthes?--=:-+123fd56569565@gmail.co.uk and othere data missing...!", true, {"123fd56569565@gmail.co.uk"}, "Find the alphabet or dight if any invalid special character found before @"},
+            {"27 age and alphatyicbnk.?'.,dleoxkthes123fd56569565@gmail.com and othere data missing...! other@email.co.in", true, {"dleoxkthes123fd56569565@gmail.com", "other@email.co.in"}, "Find the alphabet or dight if any invalid special character found before @"},
 
             // Valid Special Characters just befor @
             {"user!@domain.com", true, {"user!@domain.com"}, "! before @ is legal according to RFC rule"},
