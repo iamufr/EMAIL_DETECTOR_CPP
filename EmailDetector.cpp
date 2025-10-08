@@ -84,15 +84,11 @@ public:
         case '|':
         case '}':
         case '~':
+        case '.':
             return true;
         default:
             return false;
         }
-    }
-
-    static constexpr bool isScanSafe(unsigned char c) noexcept
-    {
-        return isAlphaNum(c) || c == '.' || c == '-' || c == '_' || c == '+';
     }
 
     static constexpr bool isDomainChar(unsigned char c) noexcept
@@ -112,6 +108,14 @@ public:
     static constexpr bool isScanRightBoundary(unsigned char c) noexcept
     {
         return isScanBoundary(c) || c == '.' || c == '!' || c == '?';
+    }
+
+    static constexpr bool isInvalidLocalChar(unsigned char c) noexcept
+    {
+        return c == ' ' || c == '"' || c == '(' || c == ')' ||
+               c == ',' || c == ':' || c == ';' || c == '<' ||
+               c == '>' || c == '\\' || c == '[' || c == ']' ||
+               c == '@' || c < 33 || c > 126;
     }
 
     static constexpr bool isQtextOrQpair(unsigned char c) noexcept
@@ -217,7 +221,7 @@ private:
             }
             else
             {
-                if (!CharacterClassifier::isScanSafe(c))
+                if (!CharacterClassifier::isAtext(c))
                     return false;
                 prevDot = false;
             }
@@ -260,7 +264,7 @@ private:
 
     static bool validateDomainLabels(const std::string &text, size_t start, size_t end) noexcept
     {
-        if (start >= end || end - start < 4 || end - start > MAX_DOMAIN_PART)
+        if (start >= end || end - start < 3 || end - start > MAX_DOMAIN_PART)
             return false;
 
         if (text[start] == '.' || text[start] == '-' ||
@@ -405,9 +409,7 @@ private:
         int segmentCount = 0;
         int compressionPos = -1;
         size_t pos = start;
-        bool hasIPv4Suffix = false;
 
-        // Check for leading ::
         if (pos + 1 < end && text[pos] == ':' && text[pos + 1] == ':')
         {
             compressionPos = 0;
@@ -442,7 +444,6 @@ private:
                 {
                     if (validateIPv4(text, segStart, end))
                     {
-                        hasIPv4Suffix = true;
                         segmentCount--;
                         segmentCount += 2;
                         break;
@@ -511,7 +512,7 @@ public:
 class EmailValidator : public IEmailValidator
 {
 private:
-    static constexpr size_t MIN_EMAIL_SIZE = 6;
+    static constexpr size_t MIN_EMAIL_SIZE = 5;
     static constexpr size_t MAX_EMAIL_SIZE = 320;
 
 public:
@@ -571,12 +572,7 @@ public:
 };
 
 // ============================================================================
-// EMAIL SCANNER (Single Responsibility Principle)
-// Conservative mode for PII detection in text:
-// - Uses strict character set (only . - _ + in local part)
-// - Enforces strict word boundaries (rejects ', !, %, etc.)
-// - Rejects IP literals (brackets reserved as text delimiters)
-// - Prevents false positives like "john'semail" -> "semail"
+// EMAIL SCANNER WITH HEURISTIC EXTRACTION (Single Responsibility Principle)
 // ============================================================================
 
 class EmailScanner : public IEmailScanner
@@ -595,33 +591,198 @@ private:
     {
         const size_t len = text.length();
 
-        size_t start = atPos;
-        while (start > 0 && CharacterClassifier::isScanSafe(text[start - 1]))
-        {
-            --start;
-        }
-
         size_t end = atPos + 1;
         if (end < len && text[end] == '[')
         {
-            while (end < len && text[end] != ']')
-            {
-                ++end;
-            }
-            if (end < len)
-                ++end;
+            return {atPos, atPos, false};
         }
-        else
+
+        while (end < len && CharacterClassifier::isDomainChar(text[end]))
         {
-            while (end < len && CharacterClassifier::isDomainChar(text[end]))
+            ++end;
+        }
+        while (end > atPos + 1 && text[end - 1] == '.')
+        {
+            --end;
+        }
+
+        size_t start = atPos;
+
+        while (start > 0)
+        {
+            unsigned char prevChar = text[start - 1];
+
+            if (prevChar == '@')
             {
-                ++end;
+                break;
             }
 
-            while (end > atPos + 1 && text[end - 1] == '.')
+            if (CharacterClassifier::isInvalidLocalChar(prevChar))
             {
-                --end;
+                break;
             }
+
+            if ((prevChar == '\'' || prevChar == '`') && start > 1 && start < atPos - 1)
+            {
+                unsigned char prevPrevChar = text[start - 2];
+                unsigned char nextChar = text[start];
+
+                if (CharacterClassifier::isAlphaNum(prevPrevChar) &&
+                    CharacterClassifier::isAlphaNum(nextChar))
+                {
+                    break;
+                }
+            }
+
+            if ((prevChar == '\'' || prevChar == '`' || prevChar == '"'))
+            {
+                if (start > 1)
+                {
+                    unsigned char prevPrevChar = text[start - 2];
+                    if (prevPrevChar == '=' || prevPrevChar == ':' ||
+                        CharacterClassifier::isScanBoundary(prevPrevChar) ||
+                        prevPrevChar == '\'' || prevPrevChar == '`' || prevPrevChar == '"')
+                    {
+                        break;
+                    }
+                }
+                else if (start == 1)
+                {
+                    break;
+                }
+            }
+
+            if (prevChar == '.')
+            {
+                bool stopHere = false;
+                for (size_t i = start - 1; i > 0 && i > (start > 30 ? start - 30 : 0); --i)
+                {
+                    if (text[i - 1] == '@')
+                    {
+                        size_t segStart = i;
+                        size_t segEnd = start - 1;
+
+                        if (segEnd > segStart)
+                        {
+                            bool validDomainLabel = true;
+                            for (size_t j = segStart; j < segEnd && validDomainLabel; ++j)
+                            {
+                                if (!CharacterClassifier::isAlphaNum(text[j]) && text[j] != '-')
+                                {
+                                    validDomainLabel = false;
+                                }
+                            }
+
+                            if (validDomainLabel)
+                            {
+                                stopHere = true;
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                    else if (!CharacterClassifier::isAlphaNum(text[i - 1]) &&
+                             text[i - 1] != '-' && text[i - 1] != '.')
+                    {
+                        break;
+                    }
+                }
+
+                if (stopHere)
+                {
+                    break;
+                }
+
+                --start;
+            }
+            else if (CharacterClassifier::isAtext(prevChar))
+            {
+                --start;
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        while (start < atPos - 1 && text[start] == '.' && text[start + 1] == '.')
+        {
+            while (start < atPos && text[start] == '.')
+            {
+                ++start;
+            }
+        }
+
+        while (start < atPos && text[start] == '.')
+        {
+            ++start;
+        }
+
+        if (start > 0 && start < atPos)
+        {
+            unsigned char charBeforeStart = text[start - 1];
+
+            if (CharacterClassifier::isInvalidLocalChar(charBeforeStart))
+            {
+                size_t firstAlnum = std::string::npos;
+                size_t firstAtext = std::string::npos;
+
+                for (size_t i = start; i < atPos; ++i)
+                {
+                    if (CharacterClassifier::isAlphaNum(text[i]))
+                    {
+                        firstAlnum = i;
+                        break;
+                    }
+                    else if (firstAtext == std::string::npos && CharacterClassifier::isAtext(text[i]))
+                    {
+                        firstAtext = i;
+                    }
+                }
+
+                if (firstAlnum != std::string::npos)
+                {
+                    start = firstAlnum;
+                }
+                else if (firstAtext != std::string::npos)
+                {
+                    start = firstAtext;
+                }
+            }
+        }
+
+        if (start > 0 && start < atPos)
+        {
+            unsigned char charBefore = text[start - 1];
+
+            if ((charBefore == '\'' || charBefore == '`' || charBefore == '"'))
+            {
+                unsigned char endChar = (end < len) ? text[end] : '\0';
+
+                if (endChar == charBefore)
+                {
+                    // Quoted pattern - we've already extracted the inner content, which is good
+                    // The boundary check will validate this
+                }
+                else
+                {
+                    if (start >= 2)
+                    {
+                        unsigned char prevPrevChar = text[start - 2];
+                        if (prevPrevChar == '=' || prevPrevChar == ':' ||
+                            CharacterClassifier::isScanBoundary(prevPrevChar))
+                        {
+                            // Treat quote as boundary, not part of email
+                            // start is already correctly positioned after the quote
+                        }
+                    }
+                }
+            }
+        }
+
+        if (start >= atPos)
+        {
+            return {atPos, atPos, false};
         }
 
         bool validBoundaries = true;
@@ -629,16 +790,42 @@ private:
         if (start > 0)
         {
             unsigned char prevChar = text[start - 1];
-            if (!CharacterClassifier::isScanBoundary(prevChar))
+
+            if (CharacterClassifier::isInvalidLocalChar(prevChar))
+            {
+                validBoundaries = true;
+            }
+            else if (!CharacterClassifier::isScanBoundary(prevChar) &&
+                     prevChar != '@' && prevChar != '.' && prevChar != '=' &&
+                     prevChar != '\'' && prevChar != '`' && prevChar != '"' &&
+                     prevChar != '/')
             {
                 validBoundaries = false;
             }
+
+            if ((prevChar == '\'' || prevChar == '`' || prevChar == '"') && start > 1)
+            {
+                unsigned char prevPrevChar = text[start - 2];
+                if (CharacterClassifier::isScanBoundary(prevPrevChar) ||
+                    prevPrevChar == '=' || prevPrevChar == ':' ||
+                    prevPrevChar == '\'' || prevPrevChar == '`' || prevPrevChar == '"')
+                {
+                    validBoundaries = true;
+                }
+            }
+
+            if (prevChar == '/' && start > 1 && text[start - 2] == '/')
+            {
+                validBoundaries = true;
+            }
         }
 
-        if (end < len)
+        if (end < len && validBoundaries)
         {
             unsigned char nextChar = text[end];
-            if (!CharacterClassifier::isScanRightBoundary(nextChar))
+            if (!CharacterClassifier::isScanRightBoundary(nextChar) &&
+                nextChar != '\'' && nextChar != '`' && nextChar != '"' &&
+                nextChar != '@' && !CharacterClassifier::isAtext(nextChar))
             {
                 validBoundaries = false;
             }
@@ -654,25 +841,19 @@ public:
         {
             const size_t len = text.length();
 
-            if (len > MAX_INPUT_SIZE || len < 6)
+            if (len > MAX_INPUT_SIZE || len < 5)
                 return false;
 
             size_t pos = 0;
             while (pos < len)
             {
                 size_t atPos = text.find('@', pos);
-                if (atPos == std::string::npos || atPos < 1 || atPos >= len - 4)
+                if (atPos == std::string::npos || atPos < 1 || atPos >= len - 3)
                     break;
 
                 auto [start, end, validBoundaries] = findEmailBoundaries(text, atPos);
 
                 if (!validBoundaries)
-                {
-                    pos = atPos + 1;
-                    continue;
-                }
-
-                if (text[atPos + 1] == '[')
                 {
                     pos = atPos + 1;
                     continue;
@@ -704,7 +885,7 @@ public:
         {
             const size_t len = text.length();
 
-            if (len > MAX_INPUT_SIZE || len < 6)
+            if (len > MAX_INPUT_SIZE || len < 5)
                 return emails;
 
             emails.reserve(std::min(size_t(10), len / 30));
@@ -714,18 +895,12 @@ public:
             while (pos < len)
             {
                 size_t atPos = text.find('@', pos);
-                if (atPos == std::string::npos || atPos < 1 || atPos >= len - 4)
+                if (atPos == std::string::npos || atPos < 1 || atPos >= len - 3)
                     break;
 
                 auto [start, end, validBoundaries] = findEmailBoundaries(text, atPos);
 
                 if (!validBoundaries)
-                {
-                    pos = atPos + 1;
-                    continue;
-                }
-
-                if (text[atPos + 1] == '[')
                 {
                     pos = atPos + 1;
                     continue;
