@@ -1043,7 +1043,7 @@ public:
             {"In this paragraph there are some emails p@q.com=@r#@s$@t%u.org please find out them...!", true, {"p@q.com"}, "Chained valid addresses with '=', '#', '$', '%' — all within atext definition"},
             {"In this paragraph there are some emails first@domain.com++@second@@test.org--@alpha~~@beta.in please find out them...!", true, {"first@domain.com", "second++@test.org", "alpha~~@beta.in"}, "Valid plus, dash, and tilde used before '@'; RFC 5322-legal though rarely used"},
 
-            // Mixed valid/invalid in local part
+            // Mixed special characters in local part
             {"user..name@domain.com", true, {"name@domain.com"}, "Consecutive dots (standalone)"},
             {"text user..name@domain.com text", true, {"name@domain.com"}, "Consecutive dots (in text)"},
             {"text username.@domain.com text", false, {}, "Dot before @"},
@@ -1051,23 +1051,27 @@ public:
             {"user-.name@domain.com", true, {"user-.name@domain.com"}, "Hyphen-dot sequence"},
             {"user.+name@domain.com", true, {"user.+name@domain.com"}, "Dot-plus sequence"},
             {"user+.name@domain.com", true, {"user+.name@domain.com"}, "Plus-dot sequence"},
-
-            // Invalid character combinations forcing skip
-            {"user#$%name@domain.com", true, {"name@domain.com"}, "Multiple special chars in middle"},
-            {"user#.name@domain.com", true, {"name@domain.com"}, "Hash-dot forces skip"},
-            {"user.#name@domain.com", true, {"name@domain.com"}, "Dot-hash forces skip"},
-            {"user!@#name@domain.com", true, {"name@domain.com"}, "Multiple operators"},
+            {"user+-name@domain.com", true, {"user+-name@domain.com"}, "Plus-hyphen combo"},
+            {"user-+name@domain.com", true, {"user-+name@domain.com"}, "Hyphen-plus combo"},
+            {"user_-name@domain.com", true, {"user_-name@domain.com"}, "Underscore-hyphen"},
+            {"user._name@domain.com", true, {"user._name@domain.com"}, "Dot-underscore"},
+            {"user#$%name@domain.com", true, {"user#$%name@domain.com"}, "Multiple special chars in middle"},
+            {"user#.name@domain.com", true, {"user#.name@domain.com"}, "Hash-dot combo"},
+            {"user.#name@domain.com", true, {"user.#name@domain.com"}, "Dot-hash combo"},
 
             // Boundary with various terminators
             {"Email:user@domain.com;note", true, {"user@domain.com"}, "Semicolon terminator"},
             {"List[user@domain.com]end", true, {"user@domain.com"}, "Bracket terminators"},
             {"Text(user@domain.com)more", true, {"user@domain.com"}, "Parenthesis terminators"},
             {"Start<user@domain.com>end", true, {"user@domain.com"}, "Angle bracket terminators"},
+            {"Start\"user@domain.com\"end", true, {"user@domain.com"}, "Double quote terminators"},
+            {"Start\'user@domain.com\'end", true, {"user@domain.com"}, "Single quote terminators"},
+            {"Start`user@domain.com`end", true, {"user@domain.com"}, "` terminators"},
 
             // Leading invalid character patterns
-            {"$user@domain.com", true, {"user@domain.com"}, "Single $ prefix"},
-            {"$$user@domain.com", true, {"user@domain.com"}, "Double $ prefix"},
-            {"$#!user@domain.com", true, {"user@domain.com"}, "Mixed special prefix"},
+            {"$user@domain.com", true, {"$user@domain.com"}, "Single $ prefix"},
+            {"$$user@domain.com", true, {"$$user@domain.com"}, "Double $ prefix"},
+            {"$#!user@domain.com", true, {"$#!user@domain.com"}, "Mixed special prefix"},
             {".user@domain.com", true, {"user@domain.com"}, "Standalone dot prefix"},
             {"text .user@domain.com", true, {"user@domain.com"}, "Space then dot prefix"},
 
@@ -1116,10 +1120,10 @@ public:
             {"Reply to user_name@example.com.", true, {"user_name@example.com"}, "Underscore in local"},
 
             // Tricky prefix patterns
-            {"value=user@domain.com", true, {"user@domain.com"}, "Equals before email"},
-            {"price$100user@domain.com", true, {"user@domain.com"}, "Dollar with digits prefix"},
-            {"50%user@domain.com", true, {"user@domain.com"}, "Percent after digit"},
-            {"user#1@domain.com", true, {"1@domain.com"}, "Hash in middle with digit"},
+            {"value=user@domain.com", true, {"value=user@domain.com"}, "Equals before email"},
+            {"price$100user@domain.com", true, {"price$100user@domain.com"}, "Dollar with digits prefix"},
+            {"50%user@domain.com", true, {"50%user@domain.com"}, "Percent after digit"},
+            {"user#1@domain.com", true, {"user#1@domain.com"}, "Hash in middle with digit"},
 
             // Combination attacks (valid chars in invalid positions)
             {"..user@domain.com", true, {"user@domain.com"}, "Double dot prefix"},
@@ -1158,10 +1162,10 @@ public:
             {"USER@DOMAIN.COM", true, {"USER@DOMAIN.COM"}, "All uppercase"},
 
             // Special recovery scenarios
-            {"###user@domain.com", true, {"user@domain.com"}, "Hash prefix recovery"},
-            {"$$$user@domain.com", true, {"user@domain.com"}, "Dollar prefix recovery"},
-            {"!!!user@domain.com", true, {"user@domain.com"}, "Exclamation prefix recovery"},
-            {"user###name@domain.com", true, {"name@domain.com"}, "Hash in middle recovery"},
+            {"###user@domain.com", true, {"###user@domain.com"}, "Hash prefix"},
+            {"$$$user@domain.com", true, {"$$$user@domain.com"}, "Dollar prefix"},
+            {"!!!user@domain.com", true, {"!!!user@domain.com"}, "Exclamation prefix"},
+            {"user###name@domain.com", true, {"user###name@domain.com"}, "Hash in middle"},
 
             // Empty and minimal cases
             {"@", false, {}, "Just @ symbol"},
@@ -1176,8 +1180,13 @@ public:
             // Real-world problematic patterns
             {"price=$19.99,contact:user@domain.com", true, {"user@domain.com"}, "After price"},
             {"email='user@domain.com'", true, {"user@domain.com"}, "Single quoted"},
+            {"email='alpha@domin.co.uk", true, {"alpha@domin.co.uk"}, "Single quoted with = is Invalid"},
+            {"user=\"alpha@domin.co.uk\"", true, {"alpha@domin.co.uk"}, "Double quoted"},
+            {"user=\"alpha@domin.co.uk", true, {"alpha@domin.co.uk"}, "Double quoted with = is Invalid"},
+            {"user=`alpha@domin.co.uk`", true, {"alpha@domin.co.uk"}, "Inside ` quoted"},
+            {"user=`alpha@domin.co.uk", true, {"user=`alpha@domin.co.uk"}, "= and ` Special characters are valid together as well"},
             {"mailto:user@domain.com", true, {"user@domain.com"}, "After mailto:"},
-            {"http://user@domain.com", true, {"user@domain.com"}, "After http://"},
+            {"http://user@domain.com", true, {"user@domain.com"}, "After : illegal special character find the alphabet or digit"},
 
             // Consecutive operator patterns
             {"user+-name@domain.com", true, {"user+-name@domain.com"}, "Plus-hyphen combo"},
@@ -1199,9 +1208,6 @@ public:
 
             // Proper boundary handling for conservative scanning
             {"That's john'semail@example.com works", true, {"semail@example.com"}, "Apostrophe separate extraction"},
-            {"user%test@domain.com", true, {"test@domain.com"}, "% separate extraction"},
-            {"user!name@test.com", true, {"name@test.com"}, "! separate extraction"},
-            {"user#admin@example.com", true, {"admin@example.com"}, "# separate extraction"},
 
             // IP literals not extracted in scan mode
             {"Server: user@[192.168.1.1]", false, {}, "IP literal in scan mode"},
