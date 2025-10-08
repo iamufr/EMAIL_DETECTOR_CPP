@@ -967,9 +967,9 @@ public:
             {"user]@domain.com", false, {}, "] before @ is illegal in an unquoted local-part"},
             {"user@@domain.com", false, {}, "additional @ inside the local-part is illegal (only one @ separates local and domain)"},
             {"user.@domain.com", false, {}, "trailing dot in local-part is illegal (dot cannot start or end the local-part)"},
-            {"user\\r@domain.com", false, {}, "CR (carriage return) is illegal (control characters are not allowed)"},
-            {"user\\n@domain.com", false, {}, "LF (line feed/newline) is illegal (control characters are not allowed)"},
-            {"user\\t@domain.com", false, {}, "TAB is illegal (control/whitespace characters are not allowed)"},
+            {"user\r@domain.com", false, {}, "CR (carriage return) is illegal (control characters are not allowed)"},
+            {"user\n@domain.com", false, {}, "LF (line feed/newline) is illegal (control characters are not allowed)"},
+            {"user\t@domain.com", false, {}, "TAB is illegal (control/whitespace characters are not allowed)"},
 
             // Multiple Valid emails together — first valid, second valid (legal special character or characters before @)
             {"text123@user.com!@domain.in", true, {"text123@user.com", "com!@domain.in"}, "'!' before @ is legal (atext); second local-part is 'com!' which is RFC-valid"},
@@ -1026,9 +1026,9 @@ public:
             {"text@user.com]@domain.in", true, {"text@user.com"}, "']' before @ is illegal in an unquoted local-part"},
             {"text@user.com@@domain.in", true, {"text@user.com"}, "double '@' is illegal — only one @ allowed per address"},
             {"text@user.com.@domain.in", true, {"text@user.com"}, "dot cannot appear at the end of the local-part (illegal trailing dot)"},
-            {"text@user.com\\r@domain.in", true, {"text@user.com"}, "carriage return (CR) is illegal — control characters not allowed"},
-            {"text@user.com\\n@domain.in", true, {"text@user.com"}, "line feed (LF) is illegal — control characters not allowed"},
-            {"text@user.com\\t@domain.in", true, {"text@user.com"}, "horizontal tab (TAB) is illegal — whitespace not allowed"},
+            {"text@user.com\r@domain.in", true, {"text@user.com"}, "carriage return (CR) is illegal — control characters not allowed"},
+            {"text@user.com\n@domain.in", true, {"text@user.com"}, "line feed (LF) is illegal — control characters not allowed"},
+            {"text@user.com\t@domain.in", true, {"text@user.com"}, "horizontal tab (TAB) is illegal — whitespace not allowed"},
 
             // Multiple valid email-like sequences with legal special chars before '@'
             {"In this paragraph there are some emails first@domain.com#@second!@test.org!@alpha.in please find out them...!", true, {"first@domain.com", "second!@test.org", "test.org!@alpha.in"}, "Each local-part contains valid atext characters ('#', '!') before '@' — all RFC 5322 compliant"},
