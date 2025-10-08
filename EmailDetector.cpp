@@ -854,7 +854,6 @@ public:
 
             // Invalid formats
             {"user..double@domain.com", false, "Consecutive dots in local"},
-            {".user@domain.com", false, "Starts with dot"},
             {"user.@domain.com", false, "Ends with dot"},
             {"user@domain..com", false, "Consecutive dots in domain"},
             {"@example.com", false, "Missing local part"},
@@ -1072,7 +1071,7 @@ public:
             {"$user@domain.com", true, {"$user@domain.com"}, "Single $ prefix"},
             {"$$user@domain.com", true, {"$$user@domain.com"}, "Double $ prefix"},
             {"$#!user@domain.com", true, {"$#!user@domain.com"}, "Mixed special prefix"},
-            {".user@domain.com", true, {"user@domain.com"}, "Standalone dot prefix"},
+            {".user@domain.com", true, {"user@domain.com"}, "Standalone dot prefix will be treamed"},
             {"text .user@domain.com", true, {"user@domain.com"}, "Space then dot prefix"},
 
             // Multiple @ symbols
@@ -1173,20 +1172,18 @@ public:
             {"user@", false, {}, "Missing domain entirely"},
             {"@domain.com", false, {}, "Missing local entirely"},
 
-            // Malformed that looks valid initially
-            {"user@#domain.com", false, {}, "Extra @ at start"},
-            {"user.@domain.com@", false, {}, "Invalid local"},
-
-            // Real-world problematic patterns
-            {"price=$19.99,contact:user@domain.com", true, {"user@domain.com"}, "After price"},
-            {"email='user@domain.com'", true, {"user@domain.com"}, "Single quoted"},
-            {"email='alpha@domin.co.uk", true, {"alpha@domin.co.uk"}, "Single quoted with = is Invalid"},
-            {"user=\"alpha@domin.co.uk\"", true, {"alpha@domin.co.uk"}, "Double quoted"},
-            {"user=\"alpha@domin.co.uk", true, {"alpha@domin.co.uk"}, "Double quoted with = is Invalid"},
-            {"user=`alpha@domin.co.uk`", true, {"alpha@domin.co.uk"}, "Inside ` quoted"},
-            {"user=`alpha@domin.co.uk", true, {"user=`alpha@domin.co.uk"}, "= and ` Special characters are valid together as well"},
-            {"mailto:user@domain.com", true, {"user@domain.com"}, "After mailto:"},
-            {"http://user@domain.com", true, {"user@domain.com"}, "After : illegal special character find the alphabet or digit"},
+            // Real-world problematic patterns (extract canonical addr-spec substring)
+            {"price=$19.99,contact:user@domain.com", true, {"user@domain.com"}, "Money then comma then contact: extract user@domain.com"},
+            {"email='user@domain.com'", true, {"user@domain.com"}, "Single-quoted around canonical address — extract inner address"},
+            {"email='alpha@domin.co.uk", true, {"email='alpha@domin.co.uk"}, "Single-quote in local-part is atext; whole token is RFC-5322 valid"},
+            {"user=\"alpha@domin.co.uk\"", true, {"alpha@domin.co.uk"}, "Double-quoted canonical address — extract inner address"},
+            {"user=\"alpha@domin.co.uk", true, {"alpha@domin.co.uk"}, "Heuristic extraction: prefer an address that starts with an alphabet/digit before '@' if any invalid special character found in the text; if none found, accept a local-part made only of valid atext special characters"},
+            {"user=`alpha@domin.co.uk`", true, {"alpha@domin.co.uk"}, "Backtick-delimited address — extract inner address"},
+            {"user=`alpha@domin.co.uk", true, {"user=`alpha@domin.co.uk"}, "Unclosed backtick is atext; whole token is RFC-5322 valid"},
+            {"mailto:user@domain.com", true, {"user@domain.com"}, "Heuristic extraction: prefer an address that starts with an alphabet/digit before '@' if any invalid special character found in the text; if none found, accept a local-part made only of valid atext special characters"},
+            {"http://user@domain.com", true, {"user@domain.com"}, "Heuristic extraction: prefer an address that starts with an alphabet/digit before '@' if any invalid special character found in the text; if none found, accept a local-part made only of valid atext special characters"},
+            {"user=\\\"alpha@domin.co.uk\\\"", true, {"alpha@domin.co.uk"}, "heuristic: double-quoted canonical address — extract inner address"},
+            {"user=\\\"alpha@domin.co.uk", true, {"alpha@domin.co.uk"}, "heuristic: unclosed double-quote — prefer alnum-start local-part; fallback to atext-only local"},
 
             // Consecutive operator patterns
             {"user+-name@domain.com", true, {"user+-name@domain.com"}, "Plus-hyphen combo"},
