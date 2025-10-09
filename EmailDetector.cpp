@@ -579,6 +579,13 @@ public:
 // ============================================================================
 // EMAIL SCANNER WITH HEURISTIC EXTRACTION (Single Responsibility Principle)
 // ============================================================================
+// KEY FEATURES:
+// 1. Handles consecutive special characters before @ (e.g., --, '', ``)
+// 2. Strips trailing hyphens when domain ends at another @
+// 3. Smart quote handling: matches quotes or treats them as atext if unmatched
+// 4. Invalid character recovery: finds first alnum/atext after invalid char
+// 5. Backslash (\) recognized as valid boundary character
+// ============================================================================
 
 class EmailScanner : public IEmailScanner
 {
@@ -614,44 +621,6 @@ private:
         return std::string::npos;
     }
 
-    static bool hasConsecutiveDots(const std::string &text, size_t pos) noexcept
-    {
-        if (pos == 0 || pos >= text.length())
-            return false;
-        return text[pos] == '.' && text[pos - 1] == '.';
-    }
-
-    static size_t skipConsecutiveDotsBackward(const std::string &text, size_t pos) noexcept
-    {
-        while (pos > 0 && text[pos - 1] == '.')
-        {
-            --pos;
-        }
-        return pos;
-    }
-
-    static std::pair<bool, size_t> checkQuotedEmail(const std::string &text, size_t start, size_t atPos) noexcept
-    {
-        if (start > 0)
-        {
-            unsigned char quoteChar = text[start - 1];
-            if (CharacterClassifier::isQuoteChar(quoteChar))
-            {
-                size_t searchPos = atPos + 1;
-                while (searchPos < text.length() && CharacterClassifier::isDomainChar(text[searchPos]))
-                {
-                    ++searchPos;
-                }
-
-                if (searchPos < text.length() && text[searchPos] == quoteChar)
-                {
-                    return {true, start};
-                }
-            }
-        }
-        return {false, start};
-    }
-
     static EmailBoundaries findEmailBoundaries(const std::string &text, size_t atPos) noexcept
     {
         const size_t len = text.length();
@@ -672,9 +641,12 @@ private:
             --end;
         }
 
-        while (end < len && text[end] == '@' && end > atPos + 1 && text[end - 1] == '-')
+        if (end < len && text[end] == '@')
         {
-            --end;
+            while (end > atPos + 1 && text[end - 1] == '-')
+            {
+                --end;
+            }
         }
 
         size_t start = atPos;
@@ -708,8 +680,20 @@ private:
             if (CharacterClassifier::isQuoteChar(prevChar))
             {
                 bool hasMatchingQuote = false;
+
+                if (start > 1 && text[start - 2] == prevChar)
+                {
+                    --start;
+                    continue;
+                }
+
                 if (end < len && text[end] == prevChar)
                 {
+                    if (end + 1 < len && text[end + 1] == prevChar)
+                    {
+                        --start;
+                        continue;
+                    }
                     hasMatchingQuote = true;
                 }
 
@@ -717,19 +701,26 @@ private:
                 {
                     break;
                 }
-                else if (start > 1)
+                else
                 {
-                    unsigned char prevPrevChar = text[start - 2];
-                    if (prevPrevChar == '=' || prevPrevChar == ':' ||
-                        CharacterClassifier::isScanBoundary(prevPrevChar) ||
-                        CharacterClassifier::isQuoteChar(prevPrevChar))
+                    if (start > 1)
                     {
+                        unsigned char prevPrevChar = text[start - 2];
+                        if (prevPrevChar == '=' || prevPrevChar == ':' ||
+                            CharacterClassifier::isScanBoundary(prevPrevChar) ||
+                            CharacterClassifier::isQuoteChar(prevPrevChar))
+                        {
+                            --start;
+                            break;
+                        }
+                    }
+                    else if (start == 1)
+                    {
+                        --start;
                         break;
                     }
-                }
-                else if (start == 1)
-                {
-                    break;
+                    --start;
+                    continue;
                 }
             }
 
@@ -794,12 +785,6 @@ private:
             return {atPos, atPos, false};
         }
 
-        auto [isQuoted, innerStart] = checkQuotedEmail(text, start, atPos);
-        if (isQuoted)
-        {
-            start = innerStart;
-        }
-
         bool validBoundaries = true;
 
         if (start > 0)
@@ -851,7 +836,7 @@ private:
             unsigned char nextChar = text[end];
             if (!CharacterClassifier::isScanRightBoundary(nextChar) &&
                 nextChar != '\'' && nextChar != '`' && nextChar != '"' &&
-                nextChar != '@' && !CharacterClassifier::isAtext(nextChar))
+                nextChar != '@' && nextChar != '\\' && !CharacterClassifier::isAtext(nextChar))
             {
                 validBoundaries = false;
             }
