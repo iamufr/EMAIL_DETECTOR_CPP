@@ -149,7 +149,6 @@ Full RFC 5322 compliance with quoted strings, IP literals, etc.
 Γ£ô Single-char TLD: "user@domain.x"
 Γ£ô Numeric TLD: "user@domain.123"
 Γ£ô Consecutive dots in local: "user..double@domain.com"
-Γ£ô Starts with dot: ".user@domain.com"
 Γ£ô Ends with dot: "user.@domain.com"
 Γ£ô Consecutive dots in domain: "user@domain..com"
 Γ£ô Missing local part: "@example.com"
@@ -170,56 +169,882 @@ Full RFC 5322 compliance with quoted strings, IP literals, etc.
 Γ£ô Invalid IPv4 (octet = 256): "user@[192.168.1.256]"
 Γ£ô Invalid IPv6 (bad hex): "user@[gggg::1]"
 
-Result: 64/64 passed (100%)
+Result: 63/63 passed (100%)
 
 ======================================================================
 
 === TEXT SCANNING (Content Detection) ===
 Conservative validation for PII detection
 
+Γ£ô Multiple invalid chars before @
+  Input: "text###@@@user@domain.com"
+  Found: user@domain.com
+
+Γ£ô Legal email before second @
+  Input: "text@user.com@domain."
+  Found: text@user.com
+
+Γ£ô Two legal emails
+  Input: "text@user.com@domain.in"
+  Found: text@user.com user.com@domain.in
+
+Γ£ô Mixed invalid prefix
+  Input: "text!!!%(%)%$$$user@domain.com"
+  Found: user@domain.com
+
+Γ£ô Multiple dots before valid part
+  Input: "user....email@domain.com"
+  Found: email@domain.com
+
+Γ£ô Only dots before @
+  Input: "user...@domain.com"
+
+Γ£ô @ at the end
+  Input: "user@domain.com@"
+  Found: user@domain.com
+
+Γ£ô Find the alphabet or dight if any invalid special character found before @
+  Input: "27 age and !-+alphatyicbnkdleo$#-=+xkthes123fd56569565@somedomain.com and othere data missing...!"
+  Found: alphatyicbnkdleo$#-=+xkthes123fd56569565@somedomain.com
+
+Γ£ô Find the alphabet or dight if any invalid special character found before @
+  Input: "27 age and alphatyicbnkdleo$#-=+xkthes?--=:-+123fd56569565@gmail.co.uk and othere data missing...!"
+  Found: 123fd56569565@gmail.co.uk
+
+Γ£ô Find the alphabet or dight if any invalid special character found before @
+  Input: "27 age and alphatyicbnk.?'.,dleoxkthes123fd56569565@gmail.com and othere data missing...! other@email.co.in"
+  Found: dleoxkthes123fd56569565@gmail.com other@email.co.in
+
+Γ£ô Find the alphabet or dight if any invalid special character found before @ if no alphabet found then consider legal special character
+  Input: "27 age and alphatyicbnk.?'.::++--%@somedomain.co.uk and othere data missing...! other@email.co.in"
+  Found: ++--%@somedomain.co.uk other@email.co.in
+
+Γ£ô ! before @ is legal according to RFC rule
+  Input: "user!@domain.com"
+  Found: user!@domain.com
+
+Γ£ô # before @ is legal according to RFC rule
+  Input: "user#@domain.com"
+  Found: user#@domain.com
+
+Γ£ô $ before @ is legal according to RFC rule
+  Input: "user$@domain.com"
+  Found: user$@domain.com
+
+Γ£ô % before @ is legal according to RFC rule
+  Input: "user%@domain.com"
+  Found: user%@domain.com
+
+Γ£ô & before @ is legal according to RFC rule
+  Input: "user&@domain.com"
+  Found: user&@domain.com
+
+Γ£ô ' before @ is legal according to RFC rule
+  Input: "user'@domain.com"
+  Found: user'@domain.com
+
+Γ£ô * before @ is legal according to RFC rule
+  Input: "user*@domain.com"
+  Found: user*@domain.com
+
+Γ£ô + before @ is legal according to RFC rule
+  Input: "user+@domain.com"
+  Found: user+@domain.com
+
+Γ£ô - before @ is legal according to RFC rule
+  Input: "user-@domain.com"
+  Found: user-@domain.com
+
+Γ£ô / before @ is legal according to RFC rule
+  Input: "user/@domain.com"
+  Found: user/@domain.com
+
+Γ£ô = before @ is legal according to RFC rule
+  Input: "user=@domain.com"
+  Found: user=@domain.com
+
+Γ£ô ? before @ is legal according to RFC rule
+  Input: "user?@domain.com"
+  Found: user?@domain.com
+
+Γ£ô ^ before @ is legal according to RFC rule
+  Input: "user^@domain.com"
+  Found: user^@domain.com
+
+Γ£ô _ before @ is legal according to RFC rule
+  Input: "user_@domain.com"
+  Found: user_@domain.com
+
+Γ£ô ` before @ is legal according to RFC rule
+  Input: "user`@domain.com"
+  Found: user`@domain.com
+
+Γ£ô { before @ is legal according to RFC rule
+  Input: "user{@domain.com"
+  Found: user{@domain.com
+
+Γ£ô | before @ is legal according to RFC rule
+  Input: "user|@domain.com"
+  Found: user|@domain.com
+
+Γ£ô } before @ is legal according to RFC rule
+  Input: "user}@domain.com"
+  Found: user}@domain.com
+
+Γ£ô ~ before @ is legal according to RFC rule
+  Input: "user~@domain.com"
+  Found: user~@domain.com
+
+Γ£ô space before @ is illegal in an unquoted local-part
+  Input: "user @domain.com"
+
+Γ£ô " (double quote) is illegal unless the entire local-part is a quoted-string (e.g. "...")
+  Input: "user"@domain.com"
+
+Γ£ô ( before @ is illegal in an unquoted local-part (parentheses used for comments)
+  Input: "user(@domain.com"
+
+Γ£ô ) before @ is illegal in an unquoted local-part (parentheses used for comments)
+  Input: "user)@domain.com"
+
+Γ£ô , before @ is illegal in an unquoted local-part
+  Input: "user,@domain.com"
+
+Γ£ô : before @ is illegal in an unquoted local-part
+  Input: "user:@domain.com"
+
+Γ£ô ; before @ is illegal in an unquoted local-part
+  Input: "user;@domain.com"
+
+Γ£ô < before @ is illegal in an unquoted local-part
+  Input: "user<@domain.com"
+
+Γ£ô > before @ is illegal in an unquoted local-part
+  Input: "user>@domain.com"
+
+Γ£ô \ (backslash) is illegal unquoted; allowed only inside quoted-strings as an escape
+  Input: "user\@domain.com"
+
+Γ£ô [ before @ is illegal in an unquoted local-part
+  Input: "user[@domain.com"
+
+Γ£ô ] before @ is illegal in an unquoted local-part
+  Input: "user]@domain.com"
+
+Γ£ô additional @ inside the local-part is illegal (only one @ separates local and domain)
+  Input: "user@@domain.com"
+
+Γ£ô trailing dot in local-part is illegal (dot cannot start or end the local-part)
+  Input: "user.@domain.com"
+
+Γ£ô CR (carriage return) is illegal (control characters are not allowed)
+@domain.com"er
+
+Γ£ô LF (line feed/newline) is illegal (control characters are not allowed)
+  Input: "user
+@domain.com"
+
+Γ£ô TAB is illegal (control/whitespace characters are not allowed)
+  Input: "user  @domain.com"
+
+Γ£ô '!' before @ is legal (atext); second local-part is 'com!' which is RFC-valid
+  Input: "text123@user.com!@domain.in"
+  Found: text123@user.com user.com!@domain.in
+
+Γ£ô '#' before @ is legal (atext); second local-part is 'com#' which is RFC-valid
+  Input: "123text@user.com#@domain.in"
+  Found: 123text@user.com user.com#@domain.in
+
+Γ£ô '$' before @ is legal (atext); second local-part is 'com$' which is RFC-valid
+  Input: "365text@user.com$@domain.in"
+  Found: 365text@user.com user.com$@domain.in
+
+Γ£ô '%' before @ is legal (atext); second local-part is 'com%' which is RFC-valid
+  Input: "text@user.com%@domain.in"
+  Found: text@user.com user.com%@domain.in
+
+Γ£ô '&' before @ is legal (atext); second local-part is 'com&' which is RFC-valid
+  Input: "text@user.com&@domain.in"
+  Found: text@user.com user.com&@domain.in
+
+Γ£ô ''' before @ is legal (atext); second local-part is "com'" which is RFC-valid
+  Input: "text@user.com'@domain.in"
+  Found: text@user.com user.com'@domain.in
+
+Γ£ô '*' before @ is legal (atext); second local-part is 'com*' which is RFC-valid
+  Input: "text@user.com*@domain.in"
+  Found: text@user.com user.com*@domain.in
+
+Γ£ô '+' before @ is legal (atext); second local-part is 'com+' which is RFC-valid
+  Input: "text@user.com+@domain.in"
+  Found: text@user.com user.com+@domain.in
+
+Γ£ô '-' before @ is legal (atext); second local-part is 'com-' which is RFC-valid
+  Input: "text@user.com-@domain.in"
+  Found: text@user.com user.com-@domain.in
+
+Γ£ô '/' before @ is legal (atext); second local-part is 'com/' which is RFC-valid
+  Input: "text@user.com/@domain.in"
+  Found: text@user.com user.com/@domain.in
+
+Γ£ô '=' before @ is legal (atext); second local-part is 'com=' which is RFC-valid
+  Input: "text@user.com=@domain.in"
+  Found: text@user.com user.com=@domain.in
+
+Γ£ô '?' before @ is legal (atext); second local-part is 'com?' which is RFC-valid
+  Input: "text@user.com?@domain.in"
+  Found: text@user.com user.com?@domain.in
+
+Γ£ô '^' before @ is legal (atext); second local-part is 'com^' which is RFC-valid
+  Input: "text@user.com^@domain.in"
+  Found: text@user.com user.com^@domain.in
+
+Γ£ô '_' before @ is legal (atext); second local-part is 'com_' which is RFC-valid
+  Input: "text@user.com_@domain.in"
+  Found: text@user.com user.com_@domain.in
+
+Γ£ô '`' before @ is legal (atext); second local-part is 'com`' which is RFC-valid
+  Input: "text@user.com`@domain.in"
+  Found: text@user.com user.com`@domain.in
+
+Γ£ô '{' before @ is legal (atext); second local-part is 'com{' which is RFC-valid
+  Input: "text@user.com{@domain.in"
+  Found: text@user.com user.com{@domain.in
+
+Γ£ô '|' before @ is legal (atext); second local-part is 'com|' which is RFC-valid
+  Input: "text@user.com|@domain.in"
+  Found: text@user.com user.com|@domain.in
+
+Γ£ô '}' before @ is legal (atext); second local-part is 'com}' which is RFC-valid
+  Input: "text@user.com}@domain.in"
+  Found: text@user.com user.com}@domain.in
+
+Γ£ô '~' before @ is legal (atext); second local-part is 'com~' which is RFC-valid
+  Input: "text@user.com~@domain.in"
+  Found: text@user.com user.com~@domain.in
+
+Γ£ô '!!' before @ is legal (atext); second local-part is 'com!' which is RFC-valid
+  Input: "text@user.com!!@domain.in"
+  Found: text@user.com user.com!!@domain.in
+
+Γ£ô '##' before @ is legal (atext); second local-part is 'com#' which is RFC-valid
+  Input: "text@user.com##@domain.in"
+  Found: text@user.com user.com##@domain.in
+
+Γ£ô '$$' before @ is legal (atext); second local-part is 'com$' which is RFC-valid
+  Input: "text@user.com$$@domain.in"
+  Found: text@user.com user.com$$@domain.in
+
+Γ£ô '%%' before @ is legal (atext); second local-part is 'com%' which is RFC-valid
+  Input: "text@user.com%%@domain.in"
+  Found: text@user.com user.com%%@domain.in
+
+Γ£ô '&&' before @ is legal (atext); second local-part is 'com&' which is RFC-valid
+  Input: "text@user.com&&@domain.in"
+  Found: text@user.com user.com&&@domain.in
+
+Γ£ô '''' before @ is legal (atext); second local-part is "com'" which is RFC-valid
+  Input: "text@user.com''@domain.in"
+  Found: text@user.com user.com''@domain.in
+
+Γ£ô '**' before @ is legal (atext); second local-part is 'com*' which is RFC-valid
+  Input: "text@user.com**@domain.in"
+  Found: text@user.com user.com**@domain.in
+
+Γ£ô '++' before @ is legal (atext); second local-part is 'com+' which is RFC-valid
+  Input: "text@user.com++@domain.in"
+  Found: text@user.com user.com++@domain.in
+
+Γ£ô '--' before @ is legal (atext); second local-part is 'com-' which is RFC-valid
+  Input: "text@user.com--@domain.in"
+  Found: text@user.com user.com--@domain.in
+
+Γ£ô '//' before @ is legal (atext); second local-part is 'com/' which is RFC-valid
+  Input: "text@user.com//@domain.in"
+  Found: text@user.com user.com//@domain.in
+
+Γ£ô '==' before @ is legal (atext); second local-part is 'com=' which is RFC-valid
+  Input: "text@user.com==@domain.in"
+  Found: text@user.com user.com==@domain.in
+
+Γ£ô '??' before @ is legal (atext); second local-part is 'com?' which is RFC-valid
+  Input: "text@user.com??@domain.in"
+  Found: text@user.com user.com??@domain.in
+
+Γ£ô '^^' before @ is legal (atext); second local-part is 'com^' which is RFC-valid
+  Input: "text@user.com^^@domain.in"
+  Found: text@user.com user.com^^@domain.in
+
+Γ£ô '__' before @ is legal (atext); second local-part is 'com_' which is RFC-valid
+  Input: "text@user.com__@domain.in"
+  Found: text@user.com user.com__@domain.in
+
+Γ£ô '``' before @ is legal (atext); second local-part is 'com`' which is RFC-valid
+  Input: "text@user.com``@domain.in"
+  Found: text@user.com user.com``@domain.in
+
+Γ£ô '{{' before @ is legal (atext); second local-part is 'com{' which is RFC-valid
+  Input: "text@user.com{{@domain.in"
+  Found: text@user.com user.com{{@domain.in
+
+Γ£ô '||' before @ is legal (atext); second local-part is 'com|' which is RFC-valid
+  Input: "text@user.com||@domain.in"
+  Found: text@user.com user.com||@domain.in
+
+Γ£ô '}}' before @ is legal (atext); second local-part is 'com}' which is RFC-valid
+  Input: "text@user.com}}@domain.in"
+  Found: text@user.com user.com}}@domain.in
+
+Γ£ô '~~' before @ is legal (atext); second local-part is 'com~' which is RFC-valid
+  Input: "text@user.com~~@domain.in"
+  Found: text@user.com user.com~~@domain.in
+
+Γ£ô space before @ is illegal in unquoted local-part
+  Input: "text@user.com @domain.in"
+  Found: text@user.com
+
+Γ£ô " (double quote) is illegal unless the local-part is fully quoted
+  Input: "text@user.com"@domain.in"
+  Found: text@user.com
+
+Γ£ô '(' before @ is illegal (parentheses denote comments)
+  Input: "text@user.com(@domain.in"
+  Found: text@user.com
+
+Γ£ô ')' before @ is illegal (parentheses denote comments)
+  Input: "text@user.com)@domain.in"
+  Found: text@user.com
+
+Γ£ô ',' before @ is illegal in an unquoted local-part
+  Input: "text@user.com,@domain.in"
+  Found: text@user.com
+
+Γ£ô ':' before @ is illegal in an unquoted local-part
+  Input: "text@user.com:@domain.in"
+  Found: text@user.com
+
+Γ£ô ';' before @ is illegal in an unquoted local-part
+  Input: "text@user.com;@domain.in"
+  Found: text@user.com
+
+Γ£ô '<' before @ is illegal in an unquoted local-part
+  Input: "text@user.com<@domain.in"
+  Found: text@user.com
+
+Γ£ô '>' before @ is illegal in an unquoted local-part
+  Input: "text@user.com>@domain.in"
+  Found: text@user.com
+
+Γ£ô '\' is illegal unless used inside a quoted-string (escaped)
+  Input: "text@user.com\@domain.in"
+  Found: text@user.com
+
+Γ£ô '[' before @ is illegal in an unquoted local-part
+  Input: "text@user.com[@domain.in"
+  Found: text@user.com
+
+Γ£ô ']' before @ is illegal in an unquoted local-part
+  Input: "text@user.com]@domain.in"
+  Found: text@user.com
+
+Γ£ô double '@' is illegal ΓÇö only one @ allowed per address
+  Input: "text@user.com@@domain.in"
+  Found: text@user.com
+
+Γ£ô dot cannot appear at the end of the local-part (illegal trailing dot)
+  Input: "text@user.com.@domain.in"
+  Found: text@user.com
+
+Γ£ô carriage return (CR) is illegal ΓÇö control characters not allowed
+@domain.in"ext@user.com
+  Found: text@user.com
+
+Γ£ô line feed (LF) is illegal ΓÇö control characters not allowed
+  Input: "text@user.com
+@domain.in"
+  Found: text@user.com
+
+Γ£ô horizontal tab (TAB) is illegal ΓÇö whitespace not allowed
+  Input: "text@user.com @domain.in"
+  Found: text@user.com
+
+Γ£ô Each local-part contains valid atext characters ('#', '!') before '@' ΓÇö all RFC 5322 compliant
+  Input: "In this paragraph there are some emails first@domain.com#@second!@test.org!@alpha.in please find out them...!"
+  Found: first@domain.com second!@test.org test.org!@alpha.in
+
+Γ£ô Multiple addresses joined; '+', '$' are legal atext characters in local-part
+  Input: "In this paragraph there are some emails alice@company.net+@bob$@service.co$@example.org please find out them...!"
+  Found: alice@company.net bob$@service.co service.co$@example.org
+
+Γ£ô Each local-part uses legal atext chars ('*', '#', '-') before '@'
+  Input: "In this paragraph there are some emails one.user@site.com*@two#@host.org*@third-@example.io please find out them...!"
+  Found: one.user@site.com two#@host.org third-@example.io
+
+Γ£ô Double consecutive legal characters ('!!', '##', '$$') are RFC-valid though uncommon
+  Input: "In this paragraph there are some emails foo@bar.com!!@baz##@qux$$@quux.in please find out them...!"
+  Found: foo@bar.com qux$$@quux.in
+
+Γ£ô Mix of valid symbols '+', '*', '/', '-' in local-parts ΓÇö all atext-legal
+  Input: "In this paragraph there are some emails alpha@beta.com+*@gamma/delta.com+*@eps-@zeta.co please find out them...!"
+  Found: alpha@beta.com eps-@zeta.co
+
+Γ£ô Local-parts include '^', '_', '`', '{' ΓÇö all RFC-allowed characters
+  Input: "In this paragraph there are some emails u1@d1.org^@u2_@d2.net`@u3{@d3.io please find out them...!"
+  Found: u1@d1.org u2_@d2.net u3{@d3.io
+
+Γ£ô Legal special chars ('|', '~') appear before '@' ΓÇö still RFC-valid
+  Input: "In this paragraph there are some emails name@dom.com|@name2@dom2.com|@name3~@dom3.org please find out them...!"
+  Found: name@dom.com name2@dom2.com name3~@dom3.org
+
+Γ£ô Combination of '-', '+', '*' in local-part are permitted under RFC 5322
+  Input: "In this paragraph there are some emails me.last@my.org-@you+@your.org-@them*@their.io please find out them...!"
+  Found: me.last@my.org you+@your.org them*@their.io
+
+Γ£ô Chained valid addresses with '=', '#', '$', '%' ΓÇö all within atext definition
+  Input: "In this paragraph there are some emails p@q.com=@r#@s$@t%u.org please find out them...!"
+  Found: p@q.com
+
+Γ£ô Valid plus, dash, and tilde used before '@'; RFC 5322-legal though rarely used
+  Input: "In this paragraph there are some emails first@domain.com++@second@test.org--@alpha~~@beta.in please find out them...!"
+  Found: first@domain.com second@test.org alpha~~@beta.in
+
+Γ£ô Valid plus, dash, and tilde used before '@'; RFC 5322-legal though rarely used
+  Input: "In this paragraph there are some emails first@domain.com++@second@@test.org--@alpha~~@beta.in please find out them...!"
+  Found: first@domain.com alpha~~@beta.in
+
+Γ£ô Consecutive dots (standalone)
+  Input: "user..name@domain.com"
+  Found: name@domain.com
+
+Γ£ô Consecutive dots (in text)
+  Input: "text user..name@domain.com text"
+  Found: name@domain.com
+
+Γ£ô Dot before @
+  Input: "text username.@domain.com text"
+
+Γ£ô Dot-hyphen sequence
+  Input: "user.-name@domain.com"
+  Found: user.-name@domain.com
+
+Γ£ô Hyphen-dot sequence
+  Input: "user-.name@domain.com"
+  Found: user-.name@domain.com
+
+Γ£ô Dot-plus sequence
+  Input: "user.+name@domain.com"
+  Found: user.+name@domain.com
+
+Γ£ô Plus-dot sequence
+  Input: "user+.name@domain.com"
+  Found: user+.name@domain.com
+
+Γ£ô Plus-hyphen combo
+  Input: "user+-name@domain.com"
+  Found: user+-name@domain.com
+
+Γ£ô Hyphen-plus combo
+  Input: "user-+name@domain.com"
+  Found: user-+name@domain.com
+
+Γ£ô Underscore-hyphen
+  Input: "user_-name@domain.com"
+  Found: user_-name@domain.com
+
+Γ£ô Dot-underscore
+  Input: "user._name@domain.com"
+  Found: user._name@domain.com
+
+Γ£ô Multiple special chars in middle
+  Input: "user#$%name@domain.com"
+  Found: user#$%name@domain.com
+
+Γ£ô Hash-dot combo
+  Input: "user#.name@domain.com"
+  Found: user#.name@domain.com
+
+Γ£ô Dot-hash combo
+  Input: "user.#name@domain.com"
+  Found: user.#name@domain.com
+
+Γ£ô Semicolon terminator
+  Input: "Email:user@domain.com;note"
+  Found: user@domain.com
+
+Γ£ô Bracket terminators
+  Input: "List[user@domain.com]end"
+  Found: user@domain.com
+
+Γ£ô Parenthesis terminators
+  Input: "Text(user@domain.com)more"
+  Found: user@domain.com
+
+Γ£ô Angle bracket terminators
+  Input: "Start<user@domain.com>end"
+  Found: user@domain.com
+
+Γ£ô Double quote terminators
+  Input: "Start"user@domain.com"end"
+  Found: user@domain.com
+
+Γ£ô Single quote terminators
+  Input: "Start'user@domain.com'end"
+  Found: user@domain.com
+
+Γ£ô ` terminators
+  Input: "Start`user@domain.com`end"
+  Found: user@domain.com
+
+Γ£ô Single $ prefix
+  Input: "$user@domain.com"
+  Found: $user@domain.com
+
+Γ£ô Double $ prefix
+  Input: "$$user@domain.com"
+  Found: $$user@domain.com
+
+Γ£ô Mixed special prefix
+  Input: "$#!user@domain.com"
+  Found: $#!user@domain.com
+
+Γ£ô Standalone dot prefix will be treamed
+  Input: ".user@domain.com"
+  Found: user@domain.com
+
+Γ£ô Space then dot prefix
+  Input: "text .user@domain.com"
+  Found: user@domain.com
+
+Γ£ô Double @ (invalid)
+  Input: "user@@domain.com"
+
+Γ£ô @ in domain (invalid)
+  Input: "user@domain@com"
+
+Γ£ô Multiple @ in sequence
+  Input: "first@domain.com@second@test.org"
+  Found: first@domain.com second@test.org
+
+Γ£ô Two valid separate emails
+  Input: "user@domain.com then admin@test.org"
+  Found: user@domain.com admin@test.org
+
+Γ£ô Local part too long (>64)
+  Input: "axxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx@domain.com"
+
+Γ£ô Long part after skip
+  Input: "prefix###xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx@domain.com"
+
+Γ£ô Exactly 64 chars (valid)
+  Input: "xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@domain.com"
+  Found: xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@domain.com
+
+Γ£ô Leading hyphen in local (allowed in scan)
+  Input: "-user@domain.com"
+  Found: -user@domain.com
+
+Γ£ô Trailing hyphen in local
+  Input: "user-@domain.com"
+  Found: user-@domain.com
+
+Γ£ô Multiple hyphens
+  Input: "u-s-e-r@domain.com"
+  Found: u-s-e-r@domain.com
+
+Γ£ô Consecutive hyphens
+  Input: "user---name@domain.com"
+  Found: user---name@domain.com
+
+Γ£ô Single char subdomain
+  Input: "user@d.co"
+  Found: user@d.co
+
+Γ£ô Single char TLD
+  Input: "user@domain.c"
+  Found: user@domain.c
+
+Γ£ô Numeric TLD
+  Input: "user@domain.123"
+  Found: user@domain.123
+
+Γ£ô Multiple subdomains
+  Input: "user@sub.domain.co.uk"
+  Found: user@sub.domain.co.uk
+
+Γ£ô All numeric domain
+  Input: "user@123.456.789.012"
+  Found: user@123.456.789.012
+
+Γ£ô Missing TLD
+  Input: "user@domain"
+
+Γ£ô Trailing dot in domain
+  Input: "user@domain."
+
+Γ£ô Leading dot in domain
+  Input: "user@.domain.com"
+
+Γ£ô Consecutive dots in domain
+  Input: "user@domain..com"
+
+Γ£ô Leading hyphen in domain label
+  Input: "user@-domain.com"
+
+Γ£ô Trailing hyphen in domain label
+  Input: "user@domain-.com"
+
+Γ£ô Space before @
+  Input: "user @domain.com"
+
+Γ£ô Space after @
+  Input: "user@ domain.com"
+
+Γ£ô Space in domain
+  Input: "user@domain .com"
+
+Γ£ô Tab before @
+  Input: "user  @domain.com"
+
+Γ£ô Newline after email
+  Input: "user@domain.com
+text"
+  Found: user@domain.com
+
+Γ£ô Two minimal emails
+  Input: "Emails: a@b.co, x@y.org"
+  Found: a@b.co x@y.org
+
+Γ£ô Plus addressing
+  Input: "Contact: user+tag@site.com"
+  Found: user+tag@site.com
+
+Γ£ô Underscore in local
+  Input: "Reply to user_name@example.com."
+  Found: user_name@example.com
+
+Γ£ô Equals before email
+  Input: "value=user@domain.com"
+  Found: value=user@domain.com
+
+Γ£ô Dollar with digits prefix
+  Input: "price$100user@domain.com"
+  Found: price$100user@domain.com
+
+Γ£ô Percent after digit
+  Input: "50%user@domain.com"
+  Found: 50%user@domain.com
+
+Γ£ô Hash in middle with digit
+  Input: "user#1@domain.com"
+  Found: user#1@domain.com
+
+Γ£ô Double dot prefix
+  Input: "..user@domain.com"
+  Found: user@domain.com
+
+Γ£ô Double dot suffix
+  Input: "user..@domain.com"
+
+Γ£ô Dots at both ends
+  Input: ".user.@domain.com"
+
+Γ£ô Plus at end of local
+  Input: "user+@domain.com"
+  Found: user+@domain.com
+
+Γ£ô Plus at start of local
+  Input: "+user@domain.com"
+  Found: +user@domain.com
+
+Γ£ô Consecutive plus signs
+  Input: "user++tag@domain.com"
+  Found: user++tag@domain.com
+
+Γ£ô Multiple plus tags
+  Input: "user+tag+extra@domain.com"
+  Found: user+tag+extra@domain.com
+
+Γ£ô Many single char segments
+  Input: "u.s.e.r@domain.com"
+  Found: u.s.e.r@domain.com
+
+Γ£ô Dot immediately before @
+  Input: "user.@domain.com"
+
+Γ£ô Dot before @ in text
+  Input: "text user.@domain.com"
+
+Γ£ô IPv4 literal (scan mode)
+  Input: "user@[192.168.1.1]"
+
+Γ£ô IPv6 literal (scan mode)
+  Input: "user@[::1]"
+
+Γ£ô IPv4 in text (scan mode)
+  Input: "text user@[10.0.0.1] more"
+
+Γ£ô Minimal valid email
+  Input: "a@b.co"
+  Found: a@b.co
+
+Γ£ô Minimal with single char TLD
+  Input: "a@b.c"
+  Found: a@b.c
+
+Γ£ô Two char everything
+  Input: "ab@cd.ef"
+  Found: ab@cd.ef
+
+Γ£ô All numeric local
+  Input: "123@domain.com"
+  Found: 123@domain.com
+
+Γ£ô Numeric subdomain
+  Input: "user@123.com"
+  Found: user@123.com
+
+Γ£ô Numbers everywhere
+  Input: "user123@domain456.com789"
+  Found: user123@domain456.com789
+
+Γ£ô Starting with number
+  Input: "2user@domain.com"
+  Found: 2user@domain.com
+
+Γ£ô Mixed case (preserved)
+  Input: "User@Domain.COM"
+  Found: User@Domain.COM
+
+Γ£ô All uppercase
+  Input: "USER@DOMAIN.COM"
+  Found: USER@DOMAIN.COM
+
+Γ£ô Hash prefix
+  Input: "###user@domain.com"
+  Found: ###user@domain.com
+
+Γ£ô Dollar prefix
+  Input: "$$$user@domain.com"
+  Found: $$$user@domain.com
+
+Γ£ô Exclamation prefix
+  Input: "!!!user@domain.com"
+  Found: !!!user@domain.com
+
+Γ£ô Hash in middle
+  Input: "user###name@domain.com"
+  Found: user###name@domain.com
+
+Γ£ô Just @ symbol
+  Input: "@"
+
+Γ£ô Double @ only
+  Input: "@@"
+
+Γ£ô Missing domain entirely
+  Input: "user@"
+
+Γ£ô Missing local entirely
+  Input: "@domain.com"
+
+Γ£ô Money then comma then contact: extract user@domain.com
+  Input: "price=$19.99,contact:user@domain.com"
+  Found: user@domain.com
+
+Γ£ô Single-quoted around canonical address ΓÇö extract inner address
+  Input: "email='user@domain.com'"
+  Found: user@domain.com
+
+Γ£ô Single-quote in local-part is atext; whole token is RFC-5322 valid
+  Input: "email='alpha@domin.co.uk"
+  Found: email='alpha@domin.co.uk
+
+Γ£ô Double-quoted canonical address ΓÇö extract inner address
+  Input: "user="alpha@domin.co.uk""
+  Found: alpha@domin.co.uk
+
+Γ£ô Heuristic extraction: prefer an address that starts with an alphabet/digit before '@' if any invalid special character found in the text; if none found, accept a local-part made only of valid atext special characters
+  Input: "user="alpha@domin.co.uk"
+  Found: alpha@domin.co.uk
+
+Γ£ô Backtick-delimited address ΓÇö extract inner address
+  Input: "user=`alpha@domin.co.uk`"
+  Found: alpha@domin.co.uk
+
+Γ£ô Unclosed backtick is atext; whole token is RFC-5322 valid
+  Input: "user=`alpha@domin.co.uk"
+  Found: user=`alpha@domin.co.uk
+
+Γ£ô Heuristic extraction: prefer an address that starts with an alphabet/digit before '@' if any invalid special character found in the text; if none found, accept a local-part made only of valid atext special characters
+  Input: "mailto:user@domain.com"
+  Found: user@domain.com
+
+Γ£ô Heuristic extraction: prefer an address that starts with an alphabet/digit before '@' if any invalid special character found in the text; if none found, accept a local-part made only of valid atext special characters
+  Input: "http://user@domain.com"
+  Found: user@domain.com
+
+Γ£ô heuristic: double-quoted canonical address ΓÇö extract inner address
+  Input: "user=\"alpha@domin.co.uk\""
+  Found: alpha@domin.co.uk
+
+Γ£ô heuristic: unclosed double-quote ΓÇö prefer alnum-start local-part; fallback to atext-only local
+  Input: "user=\"alpha@domin.co.uk"
+  Found: alpha@domin.co.uk
+
+Γ£ô Plus-hyphen combo
+  Input: "user+-name@domain.com"
+  Found: user+-name@domain.com
+
+Γ£ô Hyphen-plus combo
+  Input: "user-+name@domain.com"
+  Found: user-+name@domain.com
+
+Γ£ô Underscore-hyphen
+  Input: "user_-name@domain.com"
+  Found: user_-name@domain.com
+
+Γ£ô Dot-underscore
+  Input: "user._name@domain.com"
+  Found: user._name@domain.com
+
+Γ£ô Unicode in local part
+  Input: "user╬ô├æ├│@domain.com"
+
+Γ£ô Unicode in domain
+  Input: "user@domain╬ô├æ├│.com"
+
+Γ£ô Unicode in TLD
+  Input: "user@domain.cΓö£Γûôm"
+
 Γ£ô Email in sentence
-  Input: "Contact us at support@company.com for help"
-  Found: support@company.com
+  Input: "Contact us at support@company.co.in for help"
+  Found: support@company.co.in
 
 Γ£ô Multiple emails
-  Input: "Send to: user@example.com, admin@test.org"
-  Found: user@example.com admin@test.org
+  Input: "Send to: user@example.com, admin@test.co.org"
+  Found: user@example.com admin@test.co.org
 
 Γ£ô After colon
   Input: "Email: test@domain.co.uk"
   Found: test@domain.co.uk
 
 Γ£ô In angle brackets
-  Input: "<user@example.com>"
-  Found: user@example.com
+  Input: "<user@example.co.in>"
+  Found: user@example.co.in
 
 Γ£ô In parentheses
-  Input: "(contact: admin@site.com)"
-  Found: admin@site.com
+  Input: "(contact: admin@site.co.uk)"
+  Found: admin@site.co.uk
 
-Γ£ô Apostrophe blocks extraction
+Γ£ô Apostrophe separate extraction
   Input: "That's john'semail@example.com works"
-
-Γ£ô % blocks extraction
-  Input: "user%test@domain.com"
-
-Γ£ô ! blocks extraction
-  Input: "user!name@test.com"
-
-Γ£ô # blocks extraction
-  Input: "user#admin@example.com"
+  Found: john'semail@example.com
 
 Γ£ô IP literal in scan mode
   Input: "Server: user@[192.168.1.1]"
 
-Γ£ô Consecutive dots
-  Input: "user..double@domain.com"
-
 Γ£ô No TLD
   Input: "test@domain"
-
-Γ£ô Starts with dot
-  Input: ".user@domain.com"
 
 Γ£ô No @ symbol
   Input: "no emails here"
@@ -236,7 +1061,7 @@ Conservative validation for PII detection
   Input: "Really? user@example.com?"
   Found: user@example.com
 
-Result: 17/17 passed (100%)
+Result: 233/233 passed (100%)
 
 ======================================================================
 
@@ -249,7 +1074,8 @@ SENSITIVE: "Simple email: user@example.com in text"
 SENSITIVE: "Multiple emails: first@domain.com and second@another.org"
   => Found emails: first@domain.com second@another.org
 
-CLEAN    : "user..double@domain.com"
+SENSITIVE: "user..double@domain.com"
+  => Found emails: double@domain.com
 
 SENSITIVE: "Complex: john.doe+filter@sub.domain.co.uk mixed with text"
   => Found emails: john.doe+filter@sub.domain.co.uk
@@ -262,7 +1088,8 @@ SENSITIVE: "Edge case: a@b.co minimal email"
 SENSITIVE: "review-team@geeksforgeeks.org"
   => Found emails: review-team@geeksforgeeks.org
 
-CLEAN    : "user..double@domain.com"
+SENSITIVE: "user..double@domain.com"
+  => Found emails: double@domain.com
 
 CLEAN    : "user.@domain.com"
 
@@ -275,12 +1102,14 @@ SENSITIVE: "adfdgifldj@fk458439678 4krf8956 346 alpha@gmail.com r90wjk kf433@895
 SENSITIVE: "27 age and alphatyicbnkdleoxkthes123fd56569565@gmail.com and othere data missing...!"
   => Found emails: alphatyicbnkdleoxkthes123fd56569565@gmail.com
 
-CLEAN    : "any aged group and alphatyic(b)nkdleoxk%t/hes123fd56569565@gmail.com and othere data missing...!"
+SENSITIVE: "any aged group and alphatyic(b)nkdleoxk%t/hes123fd56569565@gmail.com and othere data missing...!"
+  => Found emails: nkdleoxk%t/hes123fd56569565@gmail.com
 
 SENSITIVE: "27 age and alphatyicbnk.?'.,dleoxkthes123fd56569565@gmail.com and othere data missing...! other@email.co"
   => Found emails: dleoxkthes123fd56569565@gmail.com other@email.co
 
-CLEAN    : "27 age and alphatyicbnkdleo$#-=+xkthes123fd56569565@gmail.com and othere data missing...!"
+SENSITIVE: "27 age and alphatyicbnkdleo$#-=+xkthes123fd56569565@gmail.com and othere data missing...!"
+  => Found emails: alphatyicbnkdleo$#-=+xkthes123fd56569565@gmail.com
 
 CLEAN    : "No email here"
 
@@ -313,39 +1142,53 @@ SENSITIVE: "test.user@example.com"
 SENSITIVE: "user+tag@gmail.com"
   => Found emails: user+tag@gmail.com
 
-CLEAN    : "user!test@example.com"
+SENSITIVE: "user!test@example.com"
+  => Found emails: user!test@example.com
 
-CLEAN    : "user#tag@example.com"
+SENSITIVE: "user#tag@example.com"
+  => Found emails: user#tag@example.com
 
-CLEAN    : "user$admin@example.com"
+SENSITIVE: "user$admin@example.com"
+  => Found emails: user$admin@example.com
 
-CLEAN    : "user%percent@example.com"
+SENSITIVE: "user%percent@example.com"
+  => Found emails: user%percent@example.com
 
-CLEAN    : "user&name@example.com"
+SENSITIVE: "user&name@example.com"
+  => Found emails: user&name@example.com
 
-CLEAN    : "user'quote@example.com"
+SENSITIVE: "user'quote@example.com"
+  => Found emails: user'quote@example.com
 
-CLEAN    : "user*star@example.com"
+SENSITIVE: "user*star@example.com"
+  => Found emails: user*star@example.com
 
-CLEAN    : "user=equal@example.com"
+SENSITIVE: "user=equal@example.com"
+  => Found emails: user=equal@example.com
 
-CLEAN    : "user?question@example.com"
+SENSITIVE: "user?question@example.com"
+  => Found emails: user?question@example.com
 
-CLEAN    : "user^caret@example.com"
+SENSITIVE: "user^caret@example.com"
+  => Found emails: user^caret@example.com
 
 SENSITIVE: "user_underscore@example.com"
   => Found emails: user_underscore@example.com
 
-CLEAN    : "user`backtick@example.com"
+SENSITIVE: "user`backtick@example.com"
+  => Found emails: user`backtick@example.com
 
 SENSITIVE: "userbrace@example.com"
   => Found emails: userbrace@example.com
 
-CLEAN    : "user|pipe@example.com"
+SENSITIVE: "user|pipe@example.com"
+  => Found emails: user|pipe@example.com
 
-CLEAN    : "user}brace@example.com"
+SENSITIVE: "user}brace@example.com"
+  => Found emails: user}brace@example.com
 
-CLEAN    : "user~tilde@example.com"
+SENSITIVE: "user~tilde@example.com"
+  => Found emails: user~tilde@example.com
 
 CLEAN    : ""user"@example.com"
 
@@ -384,9 +1227,11 @@ SENSITIVE: "user@domain.x"
 SENSITIVE: "user@domain.123"
   => Found emails: user@domain.123
 
-CLEAN    : "user..double@domain.com"
+SENSITIVE: "user..double@domain.com"
+  => Found emails: double@domain.com
 
-CLEAN    : ".user@domain.com"
+SENSITIVE: ".user@domain.com"
+  => Found emails: user@domain.com
 
 CLEAN    : "user.@domain.com"
 
@@ -416,9 +1261,11 @@ SENSITIVE: "user name@example.com"
 
 CLEAN    : "user@domain .com"
 
-CLEAN    : ""unclosed@example.com"
+SENSITIVE: ""unclosed@example.com"
+  => Found emails: unclosed@example.com
 
-CLEAN    : ""user"name@example.com"
+SENSITIVE: ""user"name@example.com"
+  => Found emails: name@example.com
 
 CLEAN    : "user@[192.168.1]"
 
@@ -435,9 +1282,9 @@ CLEAN    : "user@[gggg::1]"
 Threads: 16
 Iterations per thread: 100000
 Total operations: 128000000
-Time: 2030 ms
-Ops/sec: 63054187
-Validations: 80000000
+Time: 1464 ms
+Ops/sec: 87431693
+Validations: 92800000
 
 ======================================================================
 Γ£ô 100% RFC 5322 COMPLIANT
