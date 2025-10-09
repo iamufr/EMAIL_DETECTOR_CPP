@@ -711,7 +711,7 @@ private:
                             CharacterClassifier::isQuoteChar(prevPrevChar))
                         {
                             --start;
-                            break;
+                            continue;
                         }
                     }
                     else if (start == 1)
