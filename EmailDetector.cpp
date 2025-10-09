@@ -1226,7 +1226,7 @@ public:
             {"In this paragraph there are some emails name@dom.com|@name2@dom2.com|@name3~@dom3.org please find out them...!", true, {"name@dom.com", "name2@dom2.com", "name3~@dom3.org"}, "Legal special chars ('|', '~') appear before '@' — still RFC-valid"},
             {"In this paragraph there are some emails me.last@my.org-@you+@your.org-@them*@their.io please find out them...!", true, {"me.last@my.org", "you+@your.org", "them*@their.io"}, "Combination of '-', '+', '*' in local-part are permitted under RFC 5322"},
             {"In this paragraph there are some emails p@q.com=@r#@s$@t%u.org please find out them...!", true, {"p@q.com"}, "Chained valid addresses with '=', '#', '$', '%' — all within atext definition"},
-            {"In this paragraph there are some emails first@domain.com++@second@test.org--@alpha~~@beta.in please find out them...!", true, {"first@domain.com", "second++@test.org", "alpha~~@beta.in"}, "Valid plus, dash, and tilde used before '@'; RFC 5322-legal though rarely used"},
+            {"In this paragraph there are some emails first@domain.com++@second@test.org--@alpha~~@beta.in please find out them...!", true, {"first@domain.com", "second@test.org", "alpha~~@beta.in"}, "Valid plus, dash, and tilde used before '@'; RFC 5322-legal though rarely used"},
             {"In this paragraph there are some emails first@domain.com++@second@@test.org--@alpha~~@beta.in please find out them...!", true, {"first@domain.com", "alpha~~@beta.in"}, "Valid plus, dash, and tilde used before '@'; RFC 5322-legal though rarely used"},
 
             // Mixed special characters in local part
