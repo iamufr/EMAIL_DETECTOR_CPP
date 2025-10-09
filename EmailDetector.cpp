@@ -9,6 +9,25 @@
 #include <unordered_set>
 #include <memory>
 #include <optional>
+#include <cstring>
+
+// Branch prediction hints
+#if defined(__GNUC__) || defined(__clang__)
+#define LIKELY(x) __builtin_expect(!!(x), 1)
+#define UNLIKELY(x) __builtin_expect(!!(x), 0)
+#else
+#define LIKELY(x) (x)
+#define UNLIKELY(x) (x)
+#endif
+
+// Force inline for hot path functions
+#if defined(_MSC_VER)
+#define FORCE_INLINE __forceinline
+#elif defined(__GNUC__) || defined(__clang__)
+#define FORCE_INLINE __attribute__((always_inline)) inline
+#else
+#define FORCE_INLINE inline
+#endif
 
 // ============================================================================
 // INTERFACES (SOLID: Interface Segregation Principle)
@@ -30,104 +49,108 @@ public:
 };
 
 // ============================================================================
-// CHARACTER CLASSIFICATION (Single Responsibility Principle)
+// CHARACTER CLASSIFICATION (Lookup Tables) (Single Responsibility Principle)
 // ============================================================================
 
 class CharacterClassifier
 {
+private:
+    // Lookup tables for O(1) character classification
+    static constexpr unsigned char CHAR_ALPHA = 0x01;
+    static constexpr unsigned char CHAR_DIGIT = 0x02;
+    static constexpr unsigned char CHAR_ATEXT_SPECIAL = 0x04;
+    static constexpr unsigned char CHAR_HEX = 0x08;
+    static constexpr unsigned char CHAR_DOMAIN = 0x10;
+    static constexpr unsigned char CHAR_QUOTE = 0x20;
+    static constexpr unsigned char CHAR_INVALID_LOCAL = 0x40;
+    static constexpr unsigned char CHAR_BOUNDARY = 0x80;
+
+    // Pre-computed lookup table
+    static constexpr unsigned char charTable[256] = {
+        // 0-31: control characters
+        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0xC0, 0xC0, 0x40, 0x40, 0xC0, 0x40, 0x40,
+        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
+        // 32-47: space and symbols
+        0xC0, 0x04, 0x60, 0x04, 0x04, 0x04, 0x04, 0x24, 0xC0, 0xC0, 0x04, 0x04, 0xC0, 0x14, 0x14, 0x04,
+        // 48-63: digits and more symbols
+        0x1A, 0x1A, 0x1A, 0x1A, 0x1A, 0x1A, 0x1A, 0x1A, 0x1A, 0x1A, 0xC0, 0xC0, 0xC0, 0x04, 0xC0, 0x04,
+        // 64-79: @ and uppercase letters
+        0x40, 0x19, 0x19, 0x19, 0x19, 0x19, 0x19, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+        // 80-95: more uppercase and symbols
+        0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0xC0, 0x40, 0xC0, 0x04, 0x04,
+        // 96-111: backtick and lowercase letters
+        0x24, 0x19, 0x19, 0x19, 0x19, 0x19, 0x19, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+        // 112-127: more lowercase and symbols
+        0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x04, 0x04, 0x04, 0x04, 0x40,
+        // 128-255: extended ASCII (invalid)
+        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
+        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
+        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
+        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
+        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
+        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
+        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
+        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40};
+
 public:
-    static constexpr bool isAlpha(unsigned char c) noexcept
+    static FORCE_INLINE bool isAlpha(unsigned char c) noexcept
     {
-        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+        return (charTable[c] & CHAR_ALPHA) != 0;
     }
 
-    static constexpr bool isDigit(unsigned char c) noexcept
+    static FORCE_INLINE bool isDigit(unsigned char c) noexcept
     {
-        return c >= '0' && c <= '9';
+        return (charTable[c] & CHAR_DIGIT) != 0;
     }
 
-    static constexpr bool isAlphaNum(unsigned char c) noexcept
+    static FORCE_INLINE bool isAlphaNum(unsigned char c) noexcept
     {
-        return isAlpha(c) || isDigit(c);
+        return (charTable[c] & (CHAR_ALPHA | CHAR_DIGIT)) != 0;
     }
 
-    static constexpr bool isHexDigit(unsigned char c) noexcept
+    static FORCE_INLINE bool isHexDigit(unsigned char c) noexcept
     {
-        return isDigit(c) || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f');
+        return (charTable[c] & CHAR_HEX) != 0;
     }
 
-    static constexpr bool isAtext(unsigned char c) noexcept
+    static FORCE_INLINE bool isAtext(unsigned char c) noexcept
     {
-        return isAlphaNum(c) || isAtextSpecial(c);
+        return (charTable[c] & (CHAR_ALPHA | CHAR_DIGIT | CHAR_ATEXT_SPECIAL)) != 0;
     }
 
-    static constexpr bool isAtextSpecial(unsigned char c) noexcept
+    static FORCE_INLINE bool isDomainChar(unsigned char c) noexcept
     {
-        switch (c)
-        {
-        case '!':
-        case '#':
-        case '$':
-        case '%':
-        case '&':
-        case '\'':
-        case '*':
-        case '+':
-        case '-':
-        case '/':
-        case '=':
-        case '?':
-        case '^':
-        case '_':
-        case '`':
-        case '{':
-        case '|':
-        case '}':
-        case '~':
-        case '.':
-            return true;
-        default:
-            return false;
-        }
+        return (charTable[c] & CHAR_DOMAIN) != 0;
     }
 
-    static constexpr bool isDomainChar(unsigned char c) noexcept
+    static FORCE_INLINE bool isScanBoundary(unsigned char c) noexcept
     {
-        return isAlphaNum(c) || c == '-' || c == '.';
+        return (charTable[c] & CHAR_BOUNDARY) != 0;
     }
 
-    static constexpr bool isScanBoundary(unsigned char c) noexcept
+    static FORCE_INLINE bool isScanRightBoundary(unsigned char c) noexcept
     {
-        return c == ' ' || c == '\t' || c == '\n' || c == '\r' ||
-               c == ',' || c == ';' || c == ':' ||
-               c == '<' || c == '>' ||
-               c == '(' || c == ')' ||
-               c == '[' || c == ']';
+        return (charTable[c] & CHAR_BOUNDARY) != 0 || c == '.' || c == '!' || c == '?';
     }
 
-    static constexpr bool isScanRightBoundary(unsigned char c) noexcept
+    static FORCE_INLINE bool isInvalidLocalChar(unsigned char c) noexcept
     {
-        return isScanBoundary(c) || c == '.' || c == '!' || c == '?';
+        return (charTable[c] & CHAR_INVALID_LOCAL) != 0;
     }
 
-    static constexpr bool isInvalidLocalChar(unsigned char c) noexcept
+    static FORCE_INLINE bool isQuoteChar(unsigned char c) noexcept
     {
-        return c == ' ' || c == '"' || c == '(' || c == ')' ||
-               c == ',' || c == ':' || c == ';' || c == '<' ||
-               c == '>' || c == '\\' || c == '[' || c == ']' ||
-               c == '@' || c < 33 || c > 126;
+        return (charTable[c] & CHAR_QUOTE) != 0;
     }
 
-    static constexpr bool isQtextOrQpair(unsigned char c) noexcept
+    static FORCE_INLINE bool isQtextOrQpair(unsigned char c) noexcept
     {
-        return (c >= 33 && c <= 126) && c != '\\' && c != '"';
-    }
-
-    static constexpr bool isQuoteChar(unsigned char c) noexcept
-    {
-        return c == '"' || c == '\'' || c == '`';
+        return c >= 33 && c <= 126 && c != '\\' && c != '"';
     }
 };
+
+// Initialize lookup table at compile time
+constexpr unsigned char CharacterClassifier::charTable[256];
 
 // ============================================================================
 // LOCAL PART VALIDATOR (Single Responsibility Principle)
@@ -138,12 +161,12 @@ class LocalPartValidator
 private:
     static constexpr size_t MAX_LOCAL_PART = 64;
 
-    static bool validateDotAtom(const std::string &text, size_t start, size_t end) noexcept
+    static FORCE_INLINE bool validateDotAtom(const std::string &text, size_t start, size_t end) noexcept
     {
-        if (start >= end || end - start > MAX_LOCAL_PART)
+        if (UNLIKELY(start >= end || end - start > MAX_LOCAL_PART))
             return false;
 
-        if (text[start] == '.' || text[end - 1] == '.')
+        if (UNLIKELY(text[start] == '.' || text[end - 1] == '.'))
             return false;
 
         bool prevDot = false;
@@ -152,13 +175,13 @@ private:
             unsigned char c = text[i];
             if (c == '.')
             {
-                if (prevDot)
+                if (UNLIKELY(prevDot))
                     return false;
                 prevDot = true;
             }
             else
             {
-                if (!CharacterClassifier::isAtext(c))
+                if (UNLIKELY(!CharacterClassifier::isAtext(c)))
                     return false;
                 prevDot = false;
             }
@@ -203,15 +226,12 @@ private:
         return !escaped;
     }
 
-    static bool validateScanMode(const std::string &text, size_t start, size_t end) noexcept
+    static FORCE_INLINE bool validateScanMode(const std::string &text, size_t start, size_t end) noexcept
     {
-        if (start >= end || end - start > MAX_LOCAL_PART)
+        if (UNLIKELY(start >= end || end - start > MAX_LOCAL_PART))
             return false;
 
-        if (text[start] == '"')
-            return false;
-
-        if (text[start] == '.' || text[end - 1] == '.')
+        if (UNLIKELY(text[start] == '"' || text[start] == '.' || text[end - 1] == '.'))
             return false;
 
         bool prevDot = false;
@@ -220,13 +240,13 @@ private:
             unsigned char c = text[i];
             if (c == '.')
             {
-                if (prevDot)
+                if (UNLIKELY(prevDot))
                     return false;
                 prevDot = true;
             }
             else
             {
-                if (!CharacterClassifier::isAtext(c))
+                if (UNLIKELY(!CharacterClassifier::isAtext(c)))
                     return false;
                 prevDot = false;
             }
@@ -241,8 +261,8 @@ public:
         SCAN
     };
 
-    static bool validate(const std::string &text, size_t start, size_t end,
-                         ValidationMode mode = ValidationMode::EXACT) noexcept
+    static FORCE_INLINE bool validate(const std::string &text, size_t start, size_t end,
+                                      ValidationMode mode = ValidationMode::EXACT) noexcept
     {
         if (mode == ValidationMode::SCAN)
         {
@@ -527,42 +547,45 @@ public:
         {
             const size_t len = email.length();
 
-            if (len < MIN_EMAIL_SIZE || len > MAX_EMAIL_SIZE)
+            if (UNLIKELY(len < MIN_EMAIL_SIZE || len > MAX_EMAIL_SIZE))
                 return false;
 
             size_t atPos = std::string::npos;
             bool inQuotes = false;
             bool escaped = false;
 
+            const char *data = email.data();
             for (size_t i = 0; i < len; ++i)
             {
+                char c = data[i];
+
                 if (escaped)
                 {
                     escaped = false;
                     continue;
                 }
 
-                if (email[i] == '\\' && inQuotes)
+                if (c == '\\' && inQuotes)
                 {
                     escaped = true;
                     continue;
                 }
 
-                if (email[i] == '"')
+                if (c == '"')
                 {
                     inQuotes = !inQuotes;
                     continue;
                 }
 
-                if (email[i] == '@' && !inQuotes)
+                if (c == '@' && !inQuotes)
                 {
-                    if (atPos != std::string::npos)
+                    if (UNLIKELY(atPos != std::string::npos))
                         return false;
                     atPos = i;
                 }
             }
 
-            if (atPos == std::string::npos || atPos == 0 || atPos >= len - 1)
+            if (UNLIKELY(atPos == std::string::npos || atPos == 0 || atPos >= len - 1))
                 return false;
 
             return LocalPartValidator::validate(email, 0, atPos,
@@ -599,22 +622,22 @@ private:
         bool validBoundaries;
     };
 
-    static size_t findFirstAlnum(const std::string &text, size_t pos, size_t limit) noexcept
+    static FORCE_INLINE size_t findFirstAlnum(const char *data, size_t pos, size_t limit) noexcept
     {
         while (pos < limit)
         {
-            if (CharacterClassifier::isAlphaNum(text[pos]))
+            if (LIKELY(CharacterClassifier::isAlphaNum(data[pos])))
                 return pos;
             ++pos;
         }
         return std::string::npos;
     }
 
-    static size_t findFirstAtext(const std::string &text, size_t pos, size_t limit) noexcept
+    static FORCE_INLINE size_t findFirstAtext(const char *data, size_t pos, size_t limit) noexcept
     {
         while (pos < limit)
         {
-            if (CharacterClassifier::isAtext(text[pos]))
+            if (LIKELY(CharacterClassifier::isAtext(data[pos])))
                 return pos;
             ++pos;
         }
@@ -624,26 +647,27 @@ private:
     static EmailBoundaries findEmailBoundaries(const std::string &text, size_t atPos) noexcept
     {
         const size_t len = text.length();
+        const char *data = text.data();
 
         size_t end = atPos + 1;
-        if (end < len && text[end] == '[')
+        if (UNLIKELY(end < len && data[end] == '['))
         {
             return {atPos, atPos, false};
         }
 
-        while (end < len && CharacterClassifier::isDomainChar(text[end]))
+        while (end < len && CharacterClassifier::isDomainChar(data[end]))
         {
             ++end;
         }
 
-        while (end > atPos + 1 && text[end - 1] == '.')
+        while (end > atPos + 1 && data[end - 1] == '.')
         {
             --end;
         }
 
-        if (end < len && text[end] == '@')
+        if (end < len && data[end] == '@')
         {
-            while (end > atPos + 1 && text[end - 1] == '-')
+            while (end > atPos + 1 && data[end - 1] == '-')
             {
                 --end;
             }
@@ -656,14 +680,14 @@ private:
 
         while (start > 0)
         {
-            unsigned char prevChar = text[start - 1];
+            unsigned char prevChar = data[start - 1];
 
             if (prevChar == '@')
             {
                 break;
             }
 
-            if (prevChar == '.' && start > 1 && text[start - 2] == '.')
+            if (prevChar == '.' && start > 1 && data[start - 2] == '.')
             {
                 hitInvalidChar = true;
                 invalidCharPos = start - 1;
@@ -672,6 +696,36 @@ private:
 
             if (CharacterClassifier::isInvalidLocalChar(prevChar))
             {
+                if (prevChar == '@' && start > 1)
+                {
+                    size_t lookback = start - 2;
+                    size_t validStart = start - 1;
+                    bool foundValid = false;
+
+                    while (lookback < atPos)
+                    {
+                        unsigned char c = data[lookback];
+                        if (CharacterClassifier::isAtext(c) && c != '.')
+                        {
+                            foundValid = true;
+                            validStart = lookback;
+                            if (lookback == 0)
+                                break;
+                            --lookback;
+                        }
+                        else
+                        {
+                            break;
+                        }
+                    }
+
+                    if (foundValid)
+                    {
+                        start = validStart;
+                        continue;
+                    }
+                }
+
                 hitInvalidChar = true;
                 invalidCharPos = start;
                 break;
@@ -681,15 +735,15 @@ private:
             {
                 bool hasMatchingQuote = false;
 
-                if (start > 1 && text[start - 2] == prevChar)
+                if (start > 1 && data[start - 2] == prevChar)
                 {
                     --start;
                     continue;
                 }
 
-                if (end < len && text[end] == prevChar)
+                if (end < len && data[end] == prevChar)
                 {
-                    if (end + 1 < len && text[end + 1] == prevChar)
+                    if (end + 1 < len && data[end + 1] == prevChar)
                     {
                         --start;
                         continue;
@@ -705,7 +759,7 @@ private:
                 {
                     if (start > 1)
                     {
-                        unsigned char prevPrevChar = text[start - 2];
+                        unsigned char prevPrevChar = data[start - 2];
                         if (prevPrevChar == '=' || prevPrevChar == ':' ||
                             CharacterClassifier::isScanBoundary(prevPrevChar) ||
                             CharacterClassifier::isQuoteChar(prevPrevChar))
@@ -740,7 +794,7 @@ private:
 
         if (hitInvalidChar)
         {
-            size_t recoveryPos = findFirstAlnum(text, invalidCharPos, atPos);
+            size_t recoveryPos = findFirstAlnum(data, invalidCharPos, atPos);
 
             if (recoveryPos != std::string::npos)
             {
@@ -749,7 +803,7 @@ private:
             }
             else
             {
-                recoveryPos = findFirstAtext(text, invalidCharPos, atPos);
+                recoveryPos = findFirstAtext(data, invalidCharPos, atPos);
                 if (recoveryPos != std::string::npos)
                 {
                     start = recoveryPos;
@@ -762,17 +816,17 @@ private:
             }
         }
 
-        while (start < atPos && text[start] == '.')
+        while (start < atPos && data[start] == '.')
         {
             ++start;
         }
 
         if (start < atPos && start > 0)
         {
-            unsigned char charBeforeStart = text[start - 1];
+            unsigned char charBeforeStart = data[start - 1];
             if (CharacterClassifier::isInvalidLocalChar(charBeforeStart))
             {
-                size_t firstAlnum = findFirstAlnum(text, start, atPos);
+                size_t firstAlnum = findFirstAlnum(data, start, atPos);
                 if (firstAlnum != std::string::npos)
                 {
                     start = firstAlnum;
@@ -780,7 +834,7 @@ private:
             }
         }
 
-        if (start >= atPos)
+        if (UNLIKELY(start >= atPos))
         {
             return {atPos, atPos, false};
         }
@@ -789,18 +843,11 @@ private:
 
         if (start > 0)
         {
-            unsigned char prevChar = text[start - 1];
+            unsigned char prevChar = data[start - 1];
 
             if (didRecovery)
             {
-                if (CharacterClassifier::isAlphaNum(prevChar))
-                {
-                    validBoundaries = false;
-                }
-                else
-                {
-                    validBoundaries = true;
-                }
+                validBoundaries = !CharacterClassifier::isAlphaNum(prevChar);
             }
             else if (CharacterClassifier::isInvalidLocalChar(prevChar))
             {
@@ -816,7 +863,7 @@ private:
 
             if (CharacterClassifier::isQuoteChar(prevChar) && start > 1)
             {
-                unsigned char prevPrevChar = text[start - 2];
+                unsigned char prevPrevChar = data[start - 2];
                 if (CharacterClassifier::isScanBoundary(prevPrevChar) ||
                     prevPrevChar == '=' || prevPrevChar == ':' ||
                     CharacterClassifier::isQuoteChar(prevPrevChar))
@@ -825,7 +872,7 @@ private:
                 }
             }
 
-            if (prevChar == '/' && start > 1 && text[start - 2] == '/')
+            if (prevChar == '/' && start > 1 && data[start - 2] == '/')
             {
                 validBoundaries = true;
             }
@@ -833,7 +880,7 @@ private:
 
         if (end < len && validBoundaries)
         {
-            unsigned char nextChar = text[end];
+            unsigned char nextChar = data[end];
             if (!CharacterClassifier::isScanRightBoundary(nextChar) &&
                 nextChar != '\'' && nextChar != '`' && nextChar != '"' &&
                 nextChar != '@' && nextChar != '\\' && !CharacterClassifier::isAtext(nextChar))
@@ -852,15 +899,24 @@ public:
         {
             const size_t len = text.length();
 
-            if (len > MAX_INPUT_SIZE || len < 5)
+            if (UNLIKELY(len > MAX_INPUT_SIZE || len < 5))
                 return false;
 
+            const char *data = text.data();
             size_t pos = 0;
+
             while (pos < len)
             {
-                size_t atPos = text.find('@', pos);
-                if (atPos == std::string::npos || atPos < 1 || atPos >= len - 3)
+                const char *atPtr = static_cast<const char *>(std::memchr(data + pos, '@', len - pos));
+                if (!atPtr)
                     break;
+
+                size_t atPos = atPtr - data;
+                if (UNLIKELY(atPos < 1 || atPos >= len - 3))
+                {
+                    pos = atPos + 1;
+                    continue;
+                }
 
                 auto [start, end, validBoundaries] = findEmailBoundaries(text, atPos);
 
@@ -896,18 +952,28 @@ public:
         {
             const size_t len = text.length();
 
-            if (len > MAX_INPUT_SIZE || len < 5)
+            if (UNLIKELY(len > MAX_INPUT_SIZE || len < 5))
                 return emails;
 
             emails.reserve(std::min(size_t(10), len / 30));
             std::unordered_set<std::string> seen;
+            seen.reserve(10);
 
+            const char *data = text.data();
             size_t pos = 0;
+
             while (pos < len)
             {
-                size_t atPos = text.find('@', pos);
-                if (atPos == std::string::npos || atPos < 1 || atPos >= len - 3)
+                const char *atPtr = static_cast<const char *>(std::memchr(data + pos, '@', len - pos));
+                if (!atPtr)
                     break;
+
+                size_t atPos = atPtr - data;
+                if (UNLIKELY(atPos < 1 || atPos >= len - 3))
+                {
+                    pos = atPos + 1;
+                    continue;
+                }
 
                 auto [start, end, validBoundaries] = findEmailBoundaries(text, atPos);
 
