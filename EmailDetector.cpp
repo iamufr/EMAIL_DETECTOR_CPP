@@ -122,6 +122,11 @@ public:
     {
         return (c >= 33 && c <= 126) && c != '\\' && c != '"';
     }
+
+    static constexpr bool isQuoteChar(unsigned char c) noexcept
+    {
+        return c == '"' || c == '\'' || c == '`';
+    }
 };
 
 // ============================================================================
@@ -587,6 +592,66 @@ private:
         bool validBoundaries;
     };
 
+    static size_t findFirstAlnum(const std::string &text, size_t pos, size_t limit) noexcept
+    {
+        while (pos < limit)
+        {
+            if (CharacterClassifier::isAlphaNum(text[pos]))
+                return pos;
+            ++pos;
+        }
+        return std::string::npos;
+    }
+
+    static size_t findFirstAtext(const std::string &text, size_t pos, size_t limit) noexcept
+    {
+        while (pos < limit)
+        {
+            if (CharacterClassifier::isAtext(text[pos]))
+                return pos;
+            ++pos;
+        }
+        return std::string::npos;
+    }
+
+    static bool hasConsecutiveDots(const std::string &text, size_t pos) noexcept
+    {
+        if (pos == 0 || pos >= text.length())
+            return false;
+        return text[pos] == '.' && text[pos - 1] == '.';
+    }
+
+    static size_t skipConsecutiveDotsBackward(const std::string &text, size_t pos) noexcept
+    {
+        while (pos > 0 && text[pos - 1] == '.')
+        {
+            --pos;
+        }
+        return pos;
+    }
+
+    static std::pair<bool, size_t> checkQuotedEmail(const std::string &text, size_t start, size_t atPos) noexcept
+    {
+        if (start > 0)
+        {
+            unsigned char quoteChar = text[start - 1];
+            if (CharacterClassifier::isQuoteChar(quoteChar))
+            {
+                size_t searchPos = atPos + 1;
+                while (searchPos < text.length() && CharacterClassifier::isDomainChar(text[searchPos]))
+                {
+                    ++searchPos;
+                }
+
+                if (searchPos < text.length() && text[searchPos] == quoteChar)
+                {
+                    return {true, start};
+                }
+            }
+        }
+        return {false, start};
+    }
+
     static EmailBoundaries findEmailBoundaries(const std::string &text, size_t atPos) noexcept
     {
         const size_t len = text.length();
@@ -601,12 +666,21 @@ private:
         {
             ++end;
         }
+
         while (end > atPos + 1 && text[end - 1] == '.')
         {
             --end;
         }
 
+        while (end < len && text[end] == '@' && end > atPos + 1 && text[end - 1] == '-')
+        {
+            --end;
+        }
+
         size_t start = atPos;
+        bool hitInvalidChar = false;
+        size_t invalidCharPos = atPos;
+        bool didRecovery = false;
 
         while (start > 0)
         {
@@ -617,31 +691,38 @@ private:
                 break;
             }
 
-            if (CharacterClassifier::isInvalidLocalChar(prevChar))
+            if (prevChar == '.' && start > 1 && text[start - 2] == '.')
             {
+                hitInvalidChar = true;
+                invalidCharPos = start - 1;
                 break;
             }
 
-            if ((prevChar == '\'' || prevChar == '`') && start > 1 && start < atPos - 1)
+            if (CharacterClassifier::isInvalidLocalChar(prevChar))
             {
-                unsigned char prevPrevChar = text[start - 2];
-                unsigned char nextChar = text[start];
+                hitInvalidChar = true;
+                invalidCharPos = start;
+                break;
+            }
 
-                if (CharacterClassifier::isAlphaNum(prevPrevChar) &&
-                    CharacterClassifier::isAlphaNum(nextChar))
+            if (CharacterClassifier::isQuoteChar(prevChar))
+            {
+                bool hasMatchingQuote = false;
+                if (end < len && text[end] == prevChar)
+                {
+                    hasMatchingQuote = true;
+                }
+
+                if (hasMatchingQuote)
                 {
                     break;
                 }
-            }
-
-            if ((prevChar == '\'' || prevChar == '`' || prevChar == '"'))
-            {
-                if (start > 1)
+                else if (start > 1)
                 {
                     unsigned char prevPrevChar = text[start - 2];
                     if (prevPrevChar == '=' || prevPrevChar == ':' ||
                         CharacterClassifier::isScanBoundary(prevPrevChar) ||
-                        prevPrevChar == '\'' || prevPrevChar == '`' || prevPrevChar == '"')
+                        CharacterClassifier::isQuoteChar(prevPrevChar))
                     {
                         break;
                     }
@@ -654,45 +735,6 @@ private:
 
             if (prevChar == '.')
             {
-                bool stopHere = false;
-                for (size_t i = start - 1; i > 0 && i > (start > 30 ? start - 30 : 0); --i)
-                {
-                    if (text[i - 1] == '@')
-                    {
-                        size_t segStart = i;
-                        size_t segEnd = start - 1;
-
-                        if (segEnd > segStart)
-                        {
-                            bool validDomainLabel = true;
-                            for (size_t j = segStart; j < segEnd && validDomainLabel; ++j)
-                            {
-                                if (!CharacterClassifier::isAlphaNum(text[j]) && text[j] != '-')
-                                {
-                                    validDomainLabel = false;
-                                }
-                            }
-
-                            if (validDomainLabel)
-                            {
-                                stopHere = true;
-                                break;
-                            }
-                        }
-                        break;
-                    }
-                    else if (!CharacterClassifier::isAlphaNum(text[i - 1]) &&
-                             text[i - 1] != '-' && text[i - 1] != '.')
-                    {
-                        break;
-                    }
-                }
-
-                if (stopHere)
-                {
-                    break;
-                }
-
                 --start;
             }
             else if (CharacterClassifier::isAtext(prevChar))
@@ -705,11 +747,27 @@ private:
             }
         }
 
-        while (start < atPos - 1 && text[start] == '.' && text[start + 1] == '.')
+        if (hitInvalidChar)
         {
-            while (start < atPos && text[start] == '.')
+            size_t recoveryPos = findFirstAlnum(text, invalidCharPos, atPos);
+
+            if (recoveryPos != std::string::npos)
             {
-                ++start;
+                start = recoveryPos;
+                didRecovery = true;
+            }
+            else
+            {
+                recoveryPos = findFirstAtext(text, invalidCharPos, atPos);
+                if (recoveryPos != std::string::npos)
+                {
+                    start = recoveryPos;
+                    didRecovery = true;
+                }
+                else
+                {
+                    return {atPos, atPos, false};
+                }
             }
         }
 
@@ -718,64 +776,15 @@ private:
             ++start;
         }
 
-        if (start > 0 && start < atPos)
+        if (start < atPos && start > 0)
         {
             unsigned char charBeforeStart = text[start - 1];
-
             if (CharacterClassifier::isInvalidLocalChar(charBeforeStart))
             {
-                size_t firstAlnum = std::string::npos;
-                size_t firstAtext = std::string::npos;
-
-                for (size_t i = start; i < atPos; ++i)
-                {
-                    if (CharacterClassifier::isAlphaNum(text[i]))
-                    {
-                        firstAlnum = i;
-                        break;
-                    }
-                    else if (firstAtext == std::string::npos && CharacterClassifier::isAtext(text[i]))
-                    {
-                        firstAtext = i;
-                    }
-                }
-
+                size_t firstAlnum = findFirstAlnum(text, start, atPos);
                 if (firstAlnum != std::string::npos)
                 {
                     start = firstAlnum;
-                }
-                else if (firstAtext != std::string::npos)
-                {
-                    start = firstAtext;
-                }
-            }
-        }
-
-        if (start > 0 && start < atPos)
-        {
-            unsigned char charBefore = text[start - 1];
-
-            if ((charBefore == '\'' || charBefore == '`' || charBefore == '"'))
-            {
-                unsigned char endChar = (end < len) ? text[end] : '\0';
-
-                if (endChar == charBefore)
-                {
-                    // Quoted pattern - we've already extracted the inner content, which is good
-                    // The boundary check will validate this
-                }
-                else
-                {
-                    if (start >= 2)
-                    {
-                        unsigned char prevPrevChar = text[start - 2];
-                        if (prevPrevChar == '=' || prevPrevChar == ':' ||
-                            CharacterClassifier::isScanBoundary(prevPrevChar))
-                        {
-                            // Treat quote as boundary, not part of email
-                            // start is already correctly positioned after the quote
-                        }
-                    }
                 }
             }
         }
@@ -785,13 +794,30 @@ private:
             return {atPos, atPos, false};
         }
 
+        auto [isQuoted, innerStart] = checkQuotedEmail(text, start, atPos);
+        if (isQuoted)
+        {
+            start = innerStart;
+        }
+
         bool validBoundaries = true;
 
         if (start > 0)
         {
             unsigned char prevChar = text[start - 1];
 
-            if (CharacterClassifier::isInvalidLocalChar(prevChar))
+            if (didRecovery)
+            {
+                if (CharacterClassifier::isAlphaNum(prevChar))
+                {
+                    validBoundaries = false;
+                }
+                else
+                {
+                    validBoundaries = true;
+                }
+            }
+            else if (CharacterClassifier::isInvalidLocalChar(prevChar))
             {
                 validBoundaries = true;
             }
@@ -803,12 +829,12 @@ private:
                 validBoundaries = false;
             }
 
-            if ((prevChar == '\'' || prevChar == '`' || prevChar == '"') && start > 1)
+            if (CharacterClassifier::isQuoteChar(prevChar) && start > 1)
             {
                 unsigned char prevPrevChar = text[start - 2];
                 if (CharacterClassifier::isScanBoundary(prevPrevChar) ||
                     prevPrevChar == '=' || prevPrevChar == ':' ||
-                    prevPrevChar == '\'' || prevPrevChar == '`' || prevPrevChar == '"')
+                    CharacterClassifier::isQuoteChar(prevPrevChar))
                 {
                     validBoundaries = true;
                 }
