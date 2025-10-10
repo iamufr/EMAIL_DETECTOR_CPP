@@ -614,6 +614,7 @@ class EmailScanner : public IEmailScanner
 {
 private:
     static constexpr size_t MAX_INPUT_SIZE = 10 * 1024 * 1024;
+    static constexpr size_t MAX_LEFT_SCAN = 4096;
 
     struct EmailBoundaries
     {
@@ -679,8 +680,14 @@ private:
         size_t invalidCharPos = atPos;
         bool didRecovery = false;
 
+        size_t leftScanCounter = 0;
         while (start > minScannedIndex)
         {
+            if (++leftScanCounter > MAX_LEFT_SCAN)
+            {
+                return {atPos, atPos, false};
+            }
+
             unsigned char prevChar = data[start - 1];
 
             if (prevChar == '@')
@@ -703,8 +710,14 @@ private:
                     size_t validStart = start - 1;
                     bool foundValid = false;
 
+                    size_t lookbackSteps = 0;
                     while (lookback >= minScannedIndex && lookback < atPos)
                     {
+                        if (++lookbackSteps > MAX_LEFT_SCAN)
+                        {
+                            break;
+                        }
+
                         unsigned char c = data[lookback];
                         if (CharacterClassifier::isAtext(c) && c != '.')
                         {
@@ -1195,6 +1208,7 @@ public:
 
         std::vector<TestCase> tests = {
             // Multiple consecutive invalid characters
+            {std::string(20, 'a') + "@example.com", true, {"aaaaaaaaaaaaaaaaaaaa@example.com"}, "long valid email"},
             {"noise@@valid@domain.com", true, {"valid@domain.com"}, "Multiple @ characters"},
             {"text###@@@user@domain.com", true, {"user@domain.com"}, "Multiple invalid chars before @"},
             {"text@user.com@domain.", true, {"text@user.com"}, "Legal email before second @"},
