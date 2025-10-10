@@ -621,6 +621,7 @@ private:
         size_t start;
         size_t end;
         bool validBoundaries;
+        size_t skipTo;
     };
 
     static FORCE_INLINE size_t findFirstAlnum(const char *data, size_t pos, size_t limit) noexcept
@@ -654,7 +655,7 @@ private:
         size_t end = atPos + 1;
         if (UNLIKELY(end < len && data[end] == '['))
         {
-            return {atPos, atPos, false};
+            return {atPos, atPos, false, atPos + 1};
         }
 
         while (end < len && CharacterClassifier::isDomainChar(data[end]))
@@ -680,14 +681,12 @@ private:
         size_t invalidCharPos = atPos;
         bool didRecovery = false;
 
-        size_t leftScanCounter = 0;
-        while (start > minScannedIndex)
-        {
-            if (++leftScanCounter > MAX_LEFT_SCAN)
-            {
-                return {atPos, atPos, false};
-            }
+        size_t effectiveMin = minScannedIndex;
+        if (atPos > MAX_LEFT_SCAN)
+            effectiveMin = std::max(minScannedIndex, atPos - MAX_LEFT_SCAN);
 
+        while (start > effectiveMin)
+        {
             unsigned char prevChar = data[start - 1];
 
             if (prevChar == '@')
@@ -695,7 +694,7 @@ private:
                 break;
             }
 
-            if (prevChar == '.' && start > minScannedIndex + 1 && data[start - 2] == '.')
+            if (prevChar == '.' && start > effectiveMin + 1 && data[start - 2] == '.')
             {
                 hitInvalidChar = true;
                 invalidCharPos = start - 1;
@@ -704,33 +703,30 @@ private:
 
             if (CharacterClassifier::isInvalidLocalChar(prevChar))
             {
-                if (prevChar == '@' && start > minScannedIndex + 1)
+                if (prevChar == '@' && start > effectiveMin + 1)
                 {
                     size_t lookback = start - 2;
                     size_t validStart = start - 1;
                     bool foundValid = false;
 
-                    size_t lookbackSteps = 0;
-                    while (lookback >= minScannedIndex && lookback < atPos)
+                    const size_t lookbackLimit = effectiveMin;
+
+                    while (true)
                     {
-                        if (++lookbackSteps > MAX_LEFT_SCAN)
-                        {
+                        if (lookback < lookbackLimit || lookback >= atPos)
                             break;
-                        }
 
                         unsigned char c = data[lookback];
                         if (CharacterClassifier::isAtext(c) && c != '.')
                         {
                             foundValid = true;
                             validStart = lookback;
-                            if (lookback == minScannedIndex || lookback == 0)
+                            if (lookback == lookbackLimit)
                                 break;
                             --lookback;
+                            continue;
                         }
-                        else
-                        {
-                            break;
-                        }
+                        break;
                     }
 
                     if (foundValid)
@@ -749,7 +745,7 @@ private:
             {
                 bool hasMatchingQuote = false;
 
-                if (start > minScannedIndex + 1 && data[start - 2] == prevChar)
+                if (start > effectiveMin + 1 && data[start - 2] == prevChar)
                 {
                     --start;
                     continue;
@@ -771,7 +767,7 @@ private:
                 }
                 else
                 {
-                    if (start > minScannedIndex + 1)
+                    if (start > effectiveMin + 1)
                     {
                         unsigned char prevPrevChar = data[start - 2];
                         if (prevPrevChar == '=' || prevPrevChar == ':' ||
@@ -782,7 +778,7 @@ private:
                             continue;
                         }
                     }
-                    else if (start == minScannedIndex + 1)
+                    else if (start == effectiveMin + 1)
                     {
                         --start;
                         break;
@@ -808,7 +804,7 @@ private:
 
         if (hitInvalidChar)
         {
-            size_t recoveryPos = findFirstAlnum(data, std::max(invalidCharPos, minScannedIndex), atPos);
+            size_t recoveryPos = findFirstAlnum(data, std::max(invalidCharPos, effectiveMin), atPos);
 
             if (recoveryPos != std::string::npos)
             {
@@ -817,7 +813,7 @@ private:
             }
             else
             {
-                recoveryPos = findFirstAtext(data, std::max(invalidCharPos, minScannedIndex), atPos);
+                recoveryPos = findFirstAtext(data, std::max(invalidCharPos, effectiveMin), atPos);
                 if (recoveryPos != std::string::npos)
                 {
                     start = recoveryPos;
@@ -825,7 +821,8 @@ private:
                 }
                 else
                 {
-                    return {atPos, atPos, false};
+                    size_t skip = std::min(invalidCharPos + 1, len);
+                    return {atPos, atPos, false, skip};
                 }
             }
         }
@@ -835,7 +832,7 @@ private:
             ++start;
         }
 
-        if (start < atPos && start > minScannedIndex)
+        if (start < atPos && start > effectiveMin)
         {
             unsigned char charBeforeStart = data[start - 1];
             if (CharacterClassifier::isInvalidLocalChar(charBeforeStart))
@@ -850,12 +847,13 @@ private:
 
         if (UNLIKELY(start >= atPos))
         {
-            return {atPos, atPos, false};
+            size_t skip = std::min(atPos + 1, len);
+            return {atPos, atPos, false, skip};
         }
 
         bool validBoundaries = true;
 
-        if (start > minScannedIndex)
+        if (start > effectiveMin)
         {
             unsigned char prevChar = data[start - 1];
 
@@ -875,7 +873,7 @@ private:
                 validBoundaries = false;
             }
 
-            if (CharacterClassifier::isQuoteChar(prevChar) && start > minScannedIndex + 1)
+            if (CharacterClassifier::isQuoteChar(prevChar) && start > effectiveMin + 1)
             {
                 unsigned char prevPrevChar = data[start - 2];
                 if (CharacterClassifier::isScanBoundary(prevPrevChar) ||
@@ -886,7 +884,7 @@ private:
                 }
             }
 
-            if (prevChar == '/' && start > minScannedIndex + 1 && data[start - 2] == '/')
+            if (prevChar == '/' && start > effectiveMin + 1 && data[start - 2] == '/')
             {
                 validBoundaries = true;
             }
@@ -903,7 +901,7 @@ private:
             }
         }
 
-        return {start, end, validBoundaries};
+        return {start, end, validBoundaries, 0};
     }
 
 public:
@@ -940,20 +938,23 @@ public:
                     continue;
                 }
 
-                auto [start, end, validBoundaries] = findEmailBoundaries(text, atPos, minScannedIndex);
+                auto boundaries = findEmailBoundaries(text, atPos, minScannedIndex);
 
-                if (!validBoundaries)
+                if (!boundaries.validBoundaries)
                 {
-                    pos = atPos + 1;
+                    if (boundaries.skipTo > 0)
+                        pos = boundaries.skipTo;
+                    else
+                        pos = atPos + 1;
                     continue;
                 }
 
-                if (LocalPartValidator::validate(text, start, atPos,
+                if (LocalPartValidator::validate(text, boundaries.start, atPos,
                                                  LocalPartValidator::ValidationMode::SCAN) &&
-                    DomainPartValidator::validate(text, atPos + 1, end))
+                    DomainPartValidator::validate(text, atPos + 1, boundaries.end))
                 {
-                    minScannedIndex = std::max(minScannedIndex, start);
-                    lastConsumedEnd = std::max(lastConsumedEnd, end);
+                    minScannedIndex = std::max(minScannedIndex, boundaries.start);
+                    lastConsumedEnd = std::max(lastConsumedEnd, boundaries.end);
                     return true;
                 }
 
@@ -1007,19 +1008,22 @@ public:
                     continue;
                 }
 
-                auto [start, end, validBoundaries] = findEmailBoundaries(text, atPos, minScannedIndex);
+                auto boundaries = findEmailBoundaries(text, atPos, minScannedIndex);
 
-                if (!validBoundaries)
+                if (!boundaries.validBoundaries)
                 {
-                    pos = atPos + 1;
+                    if (boundaries.skipTo > 0)
+                        pos = boundaries.skipTo;
+                    else
+                        pos = atPos + 1;
                     continue;
                 }
 
-                if (LocalPartValidator::validate(text, start, atPos,
+                if (LocalPartValidator::validate(text, boundaries.start, atPos,
                                                  LocalPartValidator::ValidationMode::SCAN) &&
-                    DomainPartValidator::validate(text, atPos + 1, end))
+                    DomainPartValidator::validate(text, atPos + 1, boundaries.end))
                 {
-                    std::string email = std::string(text.data() + start, end - start);
+                    std::string email = std::string(text.data() + boundaries.start, boundaries.end - boundaries.start);
 
                     if (seen.find(email) == seen.end())
                     {
@@ -1027,9 +1031,9 @@ public:
                         emails.emplace_back(std::move(email));
                     }
 
-                    minScannedIndex = std::max(minScannedIndex, start);
-                    lastConsumedEnd = std::max(lastConsumedEnd, end);
-                    pos = end;
+                    minScannedIndex = std::max(minScannedIndex, boundaries.start);
+                    lastConsumedEnd = std::max(lastConsumedEnd, boundaries.end);
+                    pos = boundaries.end;
                     continue;
                 }
 
