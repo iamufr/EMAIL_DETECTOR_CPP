@@ -644,7 +644,8 @@ private:
         return std::string::npos;
     }
 
-    static EmailBoundaries findEmailBoundaries(const std::string &text, size_t atPos) noexcept
+    static EmailBoundaries findEmailBoundaries(const std::string &text, size_t atPos,
+                                               size_t minScannedIndex) noexcept
     {
         const size_t len = text.length();
         const char *data = text.data();
@@ -678,7 +679,7 @@ private:
         size_t invalidCharPos = atPos;
         bool didRecovery = false;
 
-        while (start > 0)
+        while (start > minScannedIndex)
         {
             unsigned char prevChar = data[start - 1];
 
@@ -687,7 +688,7 @@ private:
                 break;
             }
 
-            if (prevChar == '.' && start > 1 && data[start - 2] == '.')
+            if (prevChar == '.' && start > minScannedIndex + 1 && data[start - 2] == '.')
             {
                 hitInvalidChar = true;
                 invalidCharPos = start - 1;
@@ -696,20 +697,20 @@ private:
 
             if (CharacterClassifier::isInvalidLocalChar(prevChar))
             {
-                if (prevChar == '@' && start > 1)
+                if (prevChar == '@' && start > minScannedIndex + 1)
                 {
                     size_t lookback = start - 2;
                     size_t validStart = start - 1;
                     bool foundValid = false;
 
-                    while (lookback < atPos)
+                    while (lookback >= minScannedIndex && lookback < atPos)
                     {
                         unsigned char c = data[lookback];
                         if (CharacterClassifier::isAtext(c) && c != '.')
                         {
                             foundValid = true;
                             validStart = lookback;
-                            if (lookback == 0)
+                            if (lookback == minScannedIndex || lookback == 0)
                                 break;
                             --lookback;
                         }
@@ -735,7 +736,7 @@ private:
             {
                 bool hasMatchingQuote = false;
 
-                if (start > 1 && data[start - 2] == prevChar)
+                if (start > minScannedIndex + 1 && data[start - 2] == prevChar)
                 {
                     --start;
                     continue;
@@ -757,7 +758,7 @@ private:
                 }
                 else
                 {
-                    if (start > 1)
+                    if (start > minScannedIndex + 1)
                     {
                         unsigned char prevPrevChar = data[start - 2];
                         if (prevPrevChar == '=' || prevPrevChar == ':' ||
@@ -768,7 +769,7 @@ private:
                             continue;
                         }
                     }
-                    else if (start == 1)
+                    else if (start == minScannedIndex + 1)
                     {
                         --start;
                         break;
@@ -794,7 +795,7 @@ private:
 
         if (hitInvalidChar)
         {
-            size_t recoveryPos = findFirstAlnum(data, invalidCharPos, atPos);
+            size_t recoveryPos = findFirstAlnum(data, std::max(invalidCharPos, minScannedIndex), atPos);
 
             if (recoveryPos != std::string::npos)
             {
@@ -803,7 +804,7 @@ private:
             }
             else
             {
-                recoveryPos = findFirstAtext(data, invalidCharPos, atPos);
+                recoveryPos = findFirstAtext(data, std::max(invalidCharPos, minScannedIndex), atPos);
                 if (recoveryPos != std::string::npos)
                 {
                     start = recoveryPos;
@@ -821,7 +822,7 @@ private:
             ++start;
         }
 
-        if (start < atPos && start > 0)
+        if (start < atPos && start > minScannedIndex)
         {
             unsigned char charBeforeStart = data[start - 1];
             if (CharacterClassifier::isInvalidLocalChar(charBeforeStart))
@@ -841,7 +842,7 @@ private:
 
         bool validBoundaries = true;
 
-        if (start > 0)
+        if (start > minScannedIndex)
         {
             unsigned char prevChar = data[start - 1];
 
@@ -861,7 +862,7 @@ private:
                 validBoundaries = false;
             }
 
-            if (CharacterClassifier::isQuoteChar(prevChar) && start > 1)
+            if (CharacterClassifier::isQuoteChar(prevChar) && start > minScannedIndex + 1)
             {
                 unsigned char prevPrevChar = data[start - 2];
                 if (CharacterClassifier::isScanBoundary(prevPrevChar) ||
@@ -872,7 +873,7 @@ private:
                 }
             }
 
-            if (prevChar == '/' && start > 1 && data[start - 2] == '/')
+            if (prevChar == '/' && start > minScannedIndex + 1 && data[start - 2] == '/')
             {
                 validBoundaries = true;
             }
@@ -904,6 +905,8 @@ public:
 
             const char *data = text.data();
             size_t pos = 0;
+            size_t minScannedIndex = 0;
+            size_t lastConsumedEnd = 0;
 
             while (pos < len)
             {
@@ -918,7 +921,13 @@ public:
                     continue;
                 }
 
-                auto [start, end, validBoundaries] = findEmailBoundaries(text, atPos);
+                if (atPos < lastConsumedEnd)
+                {
+                    pos = atPos + 1;
+                    continue;
+                }
+
+                auto [start, end, validBoundaries] = findEmailBoundaries(text, atPos, minScannedIndex);
 
                 if (!validBoundaries)
                 {
@@ -930,6 +939,8 @@ public:
                                                  LocalPartValidator::ValidationMode::SCAN) &&
                     DomainPartValidator::validate(text, atPos + 1, end))
                 {
+                    minScannedIndex = std::max(minScannedIndex, start);
+                    lastConsumedEnd = std::max(lastConsumedEnd, end);
                     return true;
                 }
 
@@ -957,10 +968,12 @@ public:
 
             emails.reserve(std::min(size_t(10), len / 30));
             std::unordered_set<std::string> seen;
-            seen.reserve(10);
+            seen.reserve(16);
 
             const char *data = text.data();
             size_t pos = 0;
+            size_t minScannedIndex = 0;
+            size_t lastConsumedEnd = 0;
 
             while (pos < len)
             {
@@ -975,7 +988,13 @@ public:
                     continue;
                 }
 
-                auto [start, end, validBoundaries] = findEmailBoundaries(text, atPos);
+                if (atPos < lastConsumedEnd)
+                {
+                    pos = atPos + 1;
+                    continue;
+                }
+
+                auto [start, end, validBoundaries] = findEmailBoundaries(text, atPos, minScannedIndex);
 
                 if (!validBoundaries)
                 {
@@ -987,13 +1006,18 @@ public:
                                                  LocalPartValidator::ValidationMode::SCAN) &&
                     DomainPartValidator::validate(text, atPos + 1, end))
                 {
-                    std::string email = text.substr(start, end - start);
+                    std::string email = std::string(text.data() + start, end - start);
 
                     if (seen.find(email) == seen.end())
                     {
                         seen.insert(email);
                         emails.emplace_back(std::move(email));
                     }
+
+                    minScannedIndex = std::max(minScannedIndex, start);
+                    lastConsumedEnd = std::max(lastConsumedEnd, end);
+                    pos = end;
+                    continue;
                 }
 
                 pos = atPos + 1;
@@ -1171,6 +1195,7 @@ public:
 
         std::vector<TestCase> tests = {
             // Multiple consecutive invalid characters
+            {"noise@@valid@domain.com", true, {"valid@domain.com"}, "Multiple @ characters"},
             {"text###@@@user@domain.com", true, {"user@domain.com"}, "Multiple invalid chars before @"},
             {"text@user.com@domain.", true, {"text@user.com"}, "Legal email before second @"},
             {"text@user.com@domain.in", true, {"text@user.com", "user.com@domain.in"}, "Two legal emails"},
