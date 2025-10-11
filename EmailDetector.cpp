@@ -980,9 +980,12 @@ public:
             if (UNLIKELY(len > MAX_INPUT_SIZE || len < 5))
                 return emails;
 
-            emails.reserve(std::min(size_t(10), len / 30));
-            std::unordered_set<std::string> seen;
-            seen.reserve(16);
+            emails.reserve(std::min<size_t>(10, len / 30));
+
+            size_t expected_unique = std::min<size_t>(len / 30, 20000u);
+            size_t reserve_size = (expected_unique * 13) / 10 + 1;
+            std::unordered_set<std::string_view> seen;
+            seen.reserve(reserve_size);
 
             const char *data = text.data();
             size_t pos = 0;
@@ -1023,12 +1026,12 @@ public:
                                                  LocalPartValidator::ValidationMode::SCAN) &&
                     DomainPartValidator::validate(text, atPos + 1, boundaries.end))
                 {
-                    std::string email = std::string(text.data() + boundaries.start, boundaries.end - boundaries.start);
+                    std::string_view emailView(text.data() + boundaries.start, boundaries.end - boundaries.start);
 
-                    if (seen.find(email) == seen.end())
+                    auto insert_result = seen.insert(emailView);
+                    if (insert_result.second)
                     {
-                        seen.insert(email);
-                        emails.emplace_back(std::move(email));
+                        emails.emplace_back(emailView);
                     }
 
                     minScannedIndex = std::max(minScannedIndex, boundaries.start);
