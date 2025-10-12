@@ -1079,7 +1079,10 @@ class EmailValidatorTest
 public:
     static void runExactValidationTests()
     {
-        std::cout << "=== RFC 5322 EXACT VALIDATION ===" << std::endl;
+        std::cout << "\n"
+                  << std::string(100, '=') << "\n";
+        std::cout << "=== RFC 5322 EXACT VALIDATION ===\n";
+        std::cout << std::string(100, '=') << "\n";
         std::cout << "Full RFC 5322 compliance with quoted strings, IP literals, etc.\n"
                   << std::endl;
 
@@ -1199,7 +1202,10 @@ public:
 
     static void runTextScanningTests()
     {
-        std::cout << "=== TEXT SCANNING (Content Detection) ===" << std::endl;
+        std::cout << "\n"
+                  << std::string(100, '=') << "\n";
+        std::cout << "=== TEXT SCANNING (Content Detection) ===\n";
+        std::cout << std::string(100, '=') << "\n";
         std::cout << "Conservative validation for PII detection\n"
                   << std::endl;
 
@@ -1601,7 +1607,10 @@ public:
 
     static void runPerformanceBenchmark()
     {
-        std::cout << "=== PERFORMANCE BENCHMARK ===" << std::endl;
+        std::cout << "\n"
+                  << std::string(100, '=') << "\n";
+        std::cout << "=== PERFORMANCE BENCHMARK ===\n";
+        std::cout << std::string(100, '=') << "\n";
 
         auto validator = EmailValidatorFactory::createValidator();
         auto scanner = EmailValidatorFactory::createScanner();
@@ -1700,25 +1709,29 @@ public:
 
         std::cout << "Threads: " << numThreads << std::endl;
         std::cout << "Iterations per thread: " << iterationsPerThread << std::endl;
+        std::cout << "Test cases: " << testCases.size() << "\n";
+        std::cout << "Total operations: " << (numThreads * iterationsPerThread * testCases.size()) << "\n";
+        std::cout << "Starting benchmark...\n"
+                  << std::flush;
 
         auto start = std::chrono::high_resolution_clock::now();
 
-        std::atomic<long long> validations{0};
+        std::atomic<long long> totalValidations{0};
         std::vector<std::thread> threads;
 
         for (int t = 0; t < numThreads; ++t)
         {
-            threads.emplace_back([&testCases, &validations, iterationsPerThread, &validator, &scanner]()
+            threads.emplace_back([&testCases, &totalValidations, iterationsPerThread, &validator, &scanner]()
                                  {
-                long long local = 0;
+                long long localValidations = 0;
                 for (int i = 0; i < iterationsPerThread; ++i) {
                     for (const auto& test : testCases) {
                         if (validator->isValid(test) || scanner->contains(test)) {
-                            ++local;
+                            ++localValidations;
                         }
                     }
                 }
-                validations += local; });
+                totalValidations += localValidations; });
         }
 
         for (auto &thread : threads)
@@ -1730,11 +1743,16 @@ public:
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 
         long long totalOps = static_cast<long long>(numThreads) * iterationsPerThread * testCases.size();
+        int millisecondsInOneSecond = 1000;
 
-        std::cout << "Total operations: " << totalOps << std::endl;
-        std::cout << "Time: " << duration.count() << " ms" << std::endl;
-        std::cout << "Ops/sec: " << (totalOps * 1000 / duration.count()) << std::endl;
-        std::cout << "Validations: " << validations.load() << std::endl;
+        std::cout << "\n"
+                  << std::string(100, '-') << "\n";
+        std::cout << "RESULTS:\n";
+        std::cout << std::string(100, '-') << "\n";
+        std::cout << "Time: " << duration.count() << " ms\n";
+        std::cout << "Ops/sec: " << (totalOps * millisecondsInOneSecond / duration.count()) << "\n";
+        std::cout << "Validations: " << totalValidations.load() << "\n";
+        std::cout << std::string(100, '=') << "\n\n";
     }
 };
 
@@ -1747,14 +1765,17 @@ int main()
     try
     {
         EmailValidatorTest::runExactValidationTests();
-        std::cout << std::string(70, '=') << "\n"
+        std::cout << std::string(100, '=') << "\n"
                   << std::endl;
 
         EmailValidatorTest::runTextScanningTests();
-        std::cout << std::string(70, '=') << "\n"
+        std::cout << std::string(100, '=') << "\n"
                   << std::endl;
 
-        std::cout << "=== EMAIL DETECTION TEST ===" << std::endl;
+        std::cout << "\n"
+                  << std::string(100, '=') << "\n";
+        std::cout << "=== EMAIL DETECTION TEST ===\n";
+        std::cout << std::string(100, '=') << "\n";
         std::cout << "Testing both exact validation and text scanning\n"
                   << std::endl;
 
@@ -1867,19 +1888,19 @@ int main()
             std::cout << std::endl;
         }
 
-        std::cout << std::string(70, '=') << std::endl;
+        std::cout << std::string(100, '=') << std::endl;
         std::cout << "✓ Email Detection Complete" << std::endl;
-        std::cout << std::string(70, '=') << std::endl;
+        std::cout << std::string(100, '=') << std::endl;
 
         EmailValidatorTest::runPerformanceBenchmark();
 
         std::cout << "\n"
-                  << std::string(70, '=') << std::endl;
+                  << std::string(100, '=') << std::endl;
         std::cout << "✓ 100% RFC 5322 COMPLIANT" << std::endl;
         std::cout << "✓ SOLID Principles Applied" << std::endl;
         std::cout << "✓ Thread-Safe Implementation" << std::endl;
         std::cout << "✓ Production-Ready Performance" << std::endl;
-        std::cout << std::string(70, '=') << std::endl;
+        std::cout << std::string(100, '=') << std::endl;
 
         std::cout << "\nFeatures:" << std::endl;
         std::cout << "  • Quoted strings: \"user name\"@example.com" << std::endl;
@@ -1889,7 +1910,7 @@ int main()
         std::cout << "  • Single-character TLDs" << std::endl;
         std::cout << "  • Conservative text scanning (strict boundaries)" << std::endl;
         std::cout << "  • Proper word boundary detection (no false positives)" << std::endl;
-        std::cout << std::string(70, '=') << std::endl;
+        std::cout << std::string(100, '=') << std::endl;
     }
     catch (const std::exception &e)
     {
