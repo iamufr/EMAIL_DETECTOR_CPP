@@ -68,8 +68,12 @@ g++ -O3 -march=native -flto -std=c++17 -pthread EmailDetector.cpp -o EmailDetect
 For development and debugging:
 
 ```bash
-g++ -std=c++17 -pthread EmailDetector.cpp -o EmailDetector
+g++ -g -std=c++17 -pthread EmailDetector.cpp -o EmailDetector
 ```
+
+  * `-g` – Includes debugging information in the binary for use with tools like GDB.
+
+-----
 
 **Performance:** ~3-4M operations/second (20x slower than optimized)
 
