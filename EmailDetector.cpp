@@ -1612,8 +1612,8 @@ public:
         std::cout << "=== PERFORMANCE BENCHMARK ===\n";
         std::cout << std::string(100, '=') << "\n";
 
-        auto validator = EmailValidatorFactory::createValidator();
-        auto scanner = EmailValidatorFactory::createScanner();
+        EmailValidator validator;
+        EmailScanner scanner;
 
         std::vector<std::string> testCases = {
             "Simple email: user@example.com in text",
@@ -1721,17 +1721,27 @@ public:
 
         for (int t = 0; t < numThreads; ++t)
         {
-            threads.emplace_back([&testCases, &totalValidations, iterationsPerThread, &validator, &scanner]()
-                                 {
-                long long localValidations = 0;
-                for (int i = 0; i < iterationsPerThread; ++i) {
-                    for (const auto& test : testCases) {
-                        if (validator->isValid(test) || scanner->contains(test)) {
-                            ++localValidations;
+            threads.emplace_back(
+                [&testCases, &totalValidations, iterationsPerThread]()
+                {
+                    EmailValidator localValidator;
+                    EmailScanner localScanner;
+
+                    long long localValidations = 0;
+
+                    for (int i = 0; i < iterationsPerThread; ++i)
+                    {
+                        for (const auto &test : testCases)
+                        {
+                            if (localValidator.isValid(test) || localScanner.contains(test))
+                            {
+                                ++localValidations;
+                            }
                         }
                     }
-                }
-                totalValidations += localValidations; });
+
+                    totalValidations.fetch_add(localValidations, std::memory_order_relaxed);
+                });
         }
 
         for (auto &thread : threads)
