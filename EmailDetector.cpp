@@ -1223,6 +1223,7 @@ public:
             // Multiple consecutive invalid characters
             {std::string(20, 'a') + "@example.com", true, {"aaaaaaaaaaaaaaaaaaaa@example.com"}, "long valid email"},
             {"noise@@valid@domain.com", true, {"valid@domain.com"}, "Multiple @ characters"},
+            {"user@[4294967296.0.0.1]", false, {}, "Invalid Domain"},
             {"text###@@@user@domain.com", true, {"user@domain.com"}, "Multiple invalid chars before @"},
             {"text@user.com@domain.", true, {"text@user.com"}, "Legal email before second @"},
             {"text@user.com@domain.in", true, {"text@user.com", "user.com@domain.in"}, "Two legal emails"},
