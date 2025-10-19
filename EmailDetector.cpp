@@ -1219,6 +1219,19 @@ public:
             std::string description;
         };
 
+        std::string json_string = R"({
+            "type": "service_account",
+            "project_id": "your-gcp-project-12345",
+            "private_key_id": "a1b2c3d4e5f67890abcdef1234567890abcdef12",
+            "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQD... (long key content) ...\n-----END PRIVATE KEY-----\n",
+            "client_email": "my-service-account@your-gcp-project-12345.iam.gserviceaccount.com",
+            "client_id": "123456789012345678901",
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/my-service-account%40your-gcp-project-12345.iam.gserviceaccount.com"
+        })";
+
         std::vector<TestCase> tests = {
             // Multiple consecutive invalid characters
             {std::string(20, 'a') + "@example.com", true, {"aaaaaaaaaaaaaaaaaaaa@example.com"}, "long valid email"},
@@ -1523,6 +1536,7 @@ public:
             {"Contact: user@example.com.", true, {"user@example.com"}, "Period after email"},
             {"Email user@example.com!", true, {"user@example.com"}, "Exclamation after email"},
             {"Really? user@example.com?", true, {"user@example.com"}, "Question mark after email"},
+            {json_string, true, {"my-service-account@your-gcp-project-12345.iam.gserviceaccount.com"}, "Email in Stringified JSON Object"},
         };
 
         int passed = 0;
