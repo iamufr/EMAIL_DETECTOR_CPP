@@ -1298,7 +1298,9 @@ public:
             size_t lastConsumedEnd = 0;
             size_t extractedCount = 0;
 
-            while (pos < len)
+            static constexpr size_t MAX_SCAN_ITERATIONS = 100'000;
+            size_t iterations = 0;
+            while (pos < len && iterations++ < MAX_SCAN_ITERATIONS)
             {
                 if (UNLIKELY(extractedCount >= MAX_EMAILS_EXTRACT))
                     break;
