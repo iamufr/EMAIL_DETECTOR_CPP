@@ -1,8 +1,12 @@
+#include <array>
+#include <string_view>
 #include <iostream>
 #include <string>
 #include <vector>
 #include <thread>
 #include <atomic>
+#include <mutex>
+#include <shared_mutex>
 #include <chrono>
 #include <algorithm>
 #include <stdexcept>
@@ -11,8 +15,12 @@
 #include <optional>
 #include <cstring>
 #include <cassert>
+#include <span>
 
-// Branch prediction hints
+// ============================================================================
+// COMPILER & PLATFORM DETECTION
+// ============================================================================
+
 #if defined(__GNUC__) || defined(__clang__)
 #define LIKELY(x) __builtin_expect(!!(x), 1)
 #define UNLIKELY(x) __builtin_expect(!!(x), 0)
@@ -21,7 +29,6 @@
 #define UNLIKELY(x) (x)
 #endif
 
-// Force inline for hot path functions
 #if defined(_MSC_VER)
 #define FORCE_INLINE __forceinline
 #elif defined(__GNUC__) || defined(__clang__)
@@ -30,20 +37,78 @@
 #define FORCE_INLINE inline
 #endif
 
-// Safety assertions (disabled in release builds with NDEBUG)
 #ifndef NDEBUG
-#define SAFE_ASSERT(condition, message)                                \
-    do                                                                 \
-    {                                                                  \
-        if (!(condition))                                              \
-        {                                                              \
-            std::cerr << "Safety violation: " << message << std::endl; \
-            assert(false);                                             \
-        }                                                              \
+#define SAFE_ASSERT(condition, message)                        \
+    do                                                         \
+    {                                                          \
+        const bool cond_result = !!(condition);                \
+        if (!cond_result)                                      \
+        {                                                      \
+            std::cerr << "Safety violation: " << message       \
+                      << " at " << __FILE__ << ":" << __LINE__ \
+                      << std::endl;                            \
+            assert(cond_result);                               \
+        }                                                      \
     } while (0)
 #else
 #define SAFE_ASSERT(condition, message) ((void)0)
 #endif
+
+// Bounds checking macro with compile-time optimization
+#define BOUNDS_CHECK(index, size)                                    \
+    do                                                               \
+    {                                                                \
+        if (UNLIKELY((index) >= (size)))                             \
+        {                                                            \
+            throw std::out_of_range("Index out of bounds: " +        \
+                                    std::to_string(index) + " >= " + \
+                                    std::to_string(size));           \
+        }                                                            \
+    } while (0)
+
+// ============================================================================
+// STATISTICS TRACKER
+// ============================================================================
+
+class ValidationStats
+{
+private:
+    mutable std::atomic<uint64_t> validationCount{0};
+    mutable std::atomic<uint64_t> scanCount{0};
+    mutable std::atomic<uint64_t> extractCount{0};
+    mutable std::atomic<uint64_t> errorCount{0};
+
+public:
+    void recordValidation() noexcept { validationCount.fetch_add(1, std::memory_order_relaxed); }
+    void recordScan() noexcept { scanCount.fetch_add(1, std::memory_order_relaxed); }
+    void recordExtract() noexcept { extractCount.fetch_add(1, std::memory_order_relaxed); }
+    void recordError() noexcept { errorCount.fetch_add(1, std::memory_order_relaxed); }
+
+    [[nodiscard]] uint64_t getValidationCount() const noexcept
+    {
+        return validationCount.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] uint64_t getScanCount() const noexcept
+    {
+        return scanCount.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] uint64_t getExtractCount() const noexcept
+    {
+        return extractCount.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] uint64_t getErrorCount() const noexcept
+    {
+        return errorCount.load(std::memory_order_relaxed);
+    }
+
+    void reset() noexcept
+    {
+        validationCount.store(0, std::memory_order_relaxed);
+        scanCount.store(0, std::memory_order_relaxed);
+        extractCount.store(0, std::memory_order_relaxed);
+        errorCount.store(0, std::memory_order_relaxed);
+    }
+};
 
 // ============================================================================
 // INTERFACES (SOLID: Interface Segregation Principle)
@@ -53,15 +118,17 @@ class IEmailValidator
 {
 public:
     virtual ~IEmailValidator() = default;
-    virtual bool isValid(const std::string &email) const noexcept = 0;
+    [[nodiscard]] virtual bool isValid(std::string_view email) const noexcept = 0;
+    [[nodiscard]] virtual const ValidationStats &getStats() const noexcept = 0;
 };
 
 class IEmailScanner
 {
 public:
     virtual ~IEmailScanner() = default;
-    virtual bool contains(const std::string &text) const noexcept = 0;
-    virtual std::vector<std::string> extract(const std::string &text) const noexcept = 0;
+    [[nodiscard]] virtual bool contains(std::string_view text) const noexcept = 0;
+    [[nodiscard]] virtual std::vector<std::string> extract(std::string_view text) const noexcept = 0;
+    [[nodiscard]] virtual const ValidationStats &getStats() const noexcept = 0;
 };
 
 // ============================================================================
@@ -71,7 +138,6 @@ public:
 class CharacterClassifier
 {
 private:
-    // Lookup tables for O(1) character classification
     static constexpr unsigned char CHAR_ALPHA = 0x01;
     static constexpr unsigned char CHAR_DIGIT = 0x02;
     static constexpr unsigned char CHAR_ATEXT_SPECIAL = 0x04;
@@ -81,92 +147,148 @@ private:
     static constexpr unsigned char CHAR_INVALID_LOCAL = 0x40;
     static constexpr unsigned char CHAR_BOUNDARY = 0x80;
 
-    // Pre-computed lookup table
-    inline static constexpr unsigned char charTable[256] = {
-        // 0-31: control characters
-        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0xC0, 0xC0, 0x40, 0x40, 0xC0, 0x40, 0x40,
-        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
-        // 32-47: space and symbols
-        0xC0, 0x04, 0x60, 0x04, 0x04, 0x04, 0x04, 0x24, 0xC0, 0xC0, 0x04, 0x04, 0xC0, 0x14, 0x14, 0x04,
-        // 48-63: digits and more symbols
-        0x1A, 0x1A, 0x1A, 0x1A, 0x1A, 0x1A, 0x1A, 0x1A, 0x1A, 0x1A, 0xC0, 0xC0, 0xC0, 0x04, 0xC0, 0x04,
-        // 64-79: @ and uppercase letters
-        0x40, 0x19, 0x19, 0x19, 0x19, 0x19, 0x19, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
-        // 80-95: more uppercase and symbols
-        0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0xC0, 0x40, 0xC0, 0x04, 0x04,
-        // 96-111: backtick and lowercase letters
-        0x24, 0x19, 0x19, 0x19, 0x19, 0x19, 0x19, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
-        // 112-127: more lowercase and symbols
-        0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x04, 0x04, 0x04, 0x04, 0x40,
-        // 128-255: extended ASCII (invalid)
-        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
-        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
-        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
-        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
-        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
-        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
-        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
-        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40};
+    // Thread-safe lazy initialization using C++11 magic statics
+    static const unsigned char *getCharTable() noexcept
+    {
+        // C++11 guarantees thread-safe initialization of static local variables
+        static constexpr unsigned char charTable[256] = {
+            // 0-31: control characters
+            0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0xC0, 0xC0, 0x40, 0x40, 0xC0, 0x40, 0x40,
+            0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
+            // 32-47: space and symbols
+            0xC0, 0x04, 0x60, 0x04, 0x04, 0x04, 0x04, 0x24, 0xC0, 0xC0, 0x04, 0x04, 0xC0, 0x14, 0x14, 0x04,
+            // 48-63: digits and more symbols
+            0x1A, 0x1A, 0x1A, 0x1A, 0x1A, 0x1A, 0x1A, 0x1A, 0x1A, 0x1A, 0xC0, 0xC0, 0xC0, 0x04, 0xC0, 0x04,
+            // 64-79: @ and uppercase letters
+            0x40, 0x19, 0x19, 0x19, 0x19, 0x19, 0x19, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+            // 80-95: more uppercase and symbols
+            0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0xC0, 0x40, 0xC0, 0x04, 0x04,
+            // 96-111: backtick and lowercase letters
+            0x24, 0x19, 0x19, 0x19, 0x19, 0x19, 0x19, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+            // 112-127: more lowercase and symbols
+            0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x04, 0x04, 0x04, 0x04, 0x40,
+            // 128-255: extended ASCII (invalid)
+            0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
+            0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
+            0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
+            0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
+            0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
+            0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
+            0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
+            0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40};
+        return charTable;
+    }
 
 public:
-    static FORCE_INLINE bool isAlpha(unsigned char c) noexcept
+    [[nodiscard]] static FORCE_INLINE bool isAlpha(unsigned char c) noexcept
     {
-        return (charTable[c] & CHAR_ALPHA) != 0;
+        return (getCharTable()[c] & CHAR_ALPHA) != 0;
     }
 
-    static FORCE_INLINE bool isDigit(unsigned char c) noexcept
+    [[nodiscard]] static FORCE_INLINE bool isDigit(unsigned char c) noexcept
     {
-        return (charTable[c] & CHAR_DIGIT) != 0;
+        return (getCharTable()[c] & CHAR_DIGIT) != 0;
     }
 
-    static FORCE_INLINE bool isAlphaNum(unsigned char c) noexcept
+    [[nodiscard]] static FORCE_INLINE bool isAlphaNum(unsigned char c) noexcept
     {
-        return (charTable[c] & (CHAR_ALPHA | CHAR_DIGIT)) != 0;
+        return (getCharTable()[c] & (CHAR_ALPHA | CHAR_DIGIT)) != 0;
     }
 
-    static FORCE_INLINE bool isHexDigit(unsigned char c) noexcept
+    [[nodiscard]] static FORCE_INLINE bool isHexDigit(unsigned char c) noexcept
     {
-        return (charTable[c] & CHAR_HEX) != 0;
+        return (getCharTable()[c] & CHAR_HEX) != 0;
     }
 
-    static FORCE_INLINE bool isAtext(unsigned char c) noexcept
+    [[nodiscard]] static FORCE_INLINE bool isAtext(unsigned char c) noexcept
     {
-        return (charTable[c] & (CHAR_ALPHA | CHAR_DIGIT | CHAR_ATEXT_SPECIAL)) != 0;
+        return (getCharTable()[c] & (CHAR_ALPHA | CHAR_DIGIT | CHAR_ATEXT_SPECIAL)) != 0;
     }
 
-    static FORCE_INLINE bool isDomainChar(unsigned char c) noexcept
+    [[nodiscard]] static FORCE_INLINE bool isDomainChar(unsigned char c) noexcept
     {
-        return (charTable[c] & CHAR_DOMAIN) != 0;
+        return (getCharTable()[c] & CHAR_DOMAIN) != 0;
     }
 
-    static FORCE_INLINE bool isScanBoundary(unsigned char c) noexcept
+    [[nodiscard]] static FORCE_INLINE bool isScanBoundary(unsigned char c) noexcept
     {
-        return (charTable[c] & CHAR_BOUNDARY) != 0;
+        return (getCharTable()[c] & CHAR_BOUNDARY) != 0;
     }
 
-    static FORCE_INLINE bool isScanRightBoundary(unsigned char c) noexcept
+    [[nodiscard]] static FORCE_INLINE bool isScanRightBoundary(unsigned char c) noexcept
     {
-        return (charTable[c] & CHAR_BOUNDARY) != 0 || c == '.' || c == '!' || c == '?';
+        return (getCharTable()[c] & CHAR_BOUNDARY) != 0 || c == '.' || c == '!' || c == '?';
     }
 
-    static FORCE_INLINE bool isInvalidLocalChar(unsigned char c) noexcept
+    [[nodiscard]] static FORCE_INLINE bool isInvalidLocalChar(unsigned char c) noexcept
     {
-        return (charTable[c] & CHAR_INVALID_LOCAL) != 0;
+        return (getCharTable()[c] & CHAR_INVALID_LOCAL) != 0;
     }
 
-    static FORCE_INLINE bool isQuoteChar(unsigned char c) noexcept
+    [[nodiscard]] static FORCE_INLINE bool isQuoteChar(unsigned char c) noexcept
     {
-        return (charTable[c] & CHAR_QUOTE) != 0;
+        return (getCharTable()[c] & CHAR_QUOTE) != 0;
     }
 
-    static FORCE_INLINE bool isQtextOrQpair(unsigned char c) noexcept
+    [[nodiscard]] static FORCE_INLINE bool isQtextOrQpair(unsigned char c) noexcept
     {
         return c >= 33 && c <= 126 && c != '\\' && c != '"';
     }
 };
 
-// Initialize lookup table at compile time
-constexpr unsigned char CharacterClassifier::charTable[256];
+// ============================================================================
+// MEMORY-SAFE STRING VIEW WRAPPER
+// ============================================================================
+
+class SafeStringView
+{
+private:
+    std::string_view view_;
+
+    void validateBounds(size_t pos, size_t len) const
+    {
+        if (UNLIKELY(pos > view_.size() || pos + len > view_.size()))
+        {
+            throw std::out_of_range("SafeStringView access out of bounds");
+        }
+    }
+
+public:
+    SafeStringView() noexcept = default;
+
+    explicit SafeStringView(std::string_view sv) noexcept : view_(sv) {}
+
+    explicit SafeStringView(const std::string &s) noexcept : view_(s) {}
+
+    SafeStringView(const char *data, size_t len) noexcept : view_(data, len) {}
+
+    [[nodiscard]] char at(size_t pos) const
+    {
+        validateBounds(pos, 1);
+        return view_[pos];
+    }
+
+    [[nodiscard]] char operator[](size_t pos) const noexcept
+    {
+        SAFE_ASSERT(pos < view_.size(), "SafeStringView index bounds");
+        return view_[pos];
+    }
+
+    [[nodiscard]] size_t size() const noexcept { return view_.size(); }
+    [[nodiscard]] size_t length() const noexcept { return view_.length(); }
+    [[nodiscard]] bool empty() const noexcept { return view_.empty(); }
+    [[nodiscard]] const char *data() const noexcept { return view_.data(); }
+
+    [[nodiscard]] SafeStringView substr(size_t pos, size_t len = std::string_view::npos) const
+    {
+        if (pos > view_.size())
+            throw std::out_of_range("SafeStringView::substr position out of bounds");
+        return SafeStringView(view_.substr(pos, len));
+    }
+
+    [[nodiscard]] std::string_view view() const noexcept { return view_; }
+    [[nodiscard]] std::string toString() const { return std::string(view_); }
+};
 
 // ============================================================================
 // LOCAL PART VALIDATOR (Single Responsibility Principle)
@@ -177,14 +299,12 @@ class LocalPartValidator
 private:
     static constexpr size_t MAX_LOCAL_PART = 64;
 
-    // SAFETY: Added comprehensive bounds checking
-    static FORCE_INLINE bool validateDotAtom(const std::string &text, size_t start, size_t end) noexcept
+    [[nodiscard]] static FORCE_INLINE bool validateDotAtom(std::string_view text, size_t start, size_t end) noexcept
     {
-        // Bounds check FIRST before any access
         if (UNLIKELY(start >= end || end > text.length() || end - start > MAX_LOCAL_PART))
             return false;
 
-        SAFE_ASSERT(start < text.length() && end <= text.length(), "validateDotAtom bounds check");
+        SAFE_ASSERT(start < text.length() && end <= text.length(), "validateDotAtom bounds");
 
         if (UNLIKELY(text[start] == '.' || text[end - 1] == '.'))
             return false;
@@ -210,14 +330,12 @@ private:
         return true;
     }
 
-    // SAFETY: Added comprehensive bounds checking
-    static bool validateQuotedString(const std::string &text, size_t start, size_t end) noexcept
+    [[nodiscard]] static bool validateQuotedString(std::string_view text, size_t start, size_t end) noexcept
     {
-        // Bounds check FIRST
         if (start >= end || end > text.length() || end - start > MAX_LOCAL_PART + 2)
             return false;
 
-        SAFE_ASSERT(start < text.length() && end <= text.length(), "validateQuotedString bounds check");
+        SAFE_ASSERT(start < text.length() && end <= text.length(), "validateQuotedString bounds");
 
         if (text[start] != '"' || text[end - 1] != '"')
             return false;
@@ -252,16 +370,13 @@ private:
         return !escaped;
     }
 
-    // SAFETY: Added comprehensive bounds checking
-    static FORCE_INLINE bool validateScanMode(const std::string &text, size_t start, size_t end) noexcept
+    [[nodiscard]] static FORCE_INLINE bool validateScanMode(std::string_view text, size_t start, size_t end) noexcept
     {
-        // Bounds check FIRST
         if (UNLIKELY(start >= end || end > text.length() || end - start > MAX_LOCAL_PART))
             return false;
 
-        SAFE_ASSERT(start < text.length() && end <= text.length(), "validateScanMode bounds check");
+        SAFE_ASSERT(start < text.length() && end <= text.length(), "validateScanMode bounds");
 
-        // Additional safety: reject quoted strings in scan mode or handle with extra care
         if (UNLIKELY(text[start] == '"' || text[start] == '.' || text[end - 1] == '.'))
             return false;
 
@@ -293,11 +408,9 @@ public:
         SCAN
     };
 
-    // SAFETY: Added bounds checking before delegation
-    static FORCE_INLINE bool validate(const std::string &text, size_t start, size_t end,
-                                      ValidationMode mode = ValidationMode::EXACT) noexcept
+    [[nodiscard]] static FORCE_INLINE bool validate(std::string_view text, size_t start, size_t end,
+                                                    ValidationMode mode = ValidationMode::EXACT) noexcept
     {
-        // Pre-validate bounds before delegating
         if (UNLIKELY(start >= end || end > text.length()))
             return false;
 
@@ -324,14 +437,12 @@ private:
     static constexpr size_t MAX_DOMAIN_PART = 253;
     static constexpr size_t MAX_LABEL_LENGTH = 63;
 
-    // SAFETY: Added comprehensive bounds checking
-    static bool validateDomainLabels(const std::string &text, size_t start, size_t end) noexcept
+    [[nodiscard]] static bool validateDomainLabels(std::string_view text, size_t start, size_t end) noexcept
     {
-        // Bounds check FIRST
         if (start >= end || end > text.length() || end - start < 3 || end - start > MAX_DOMAIN_PART)
             return false;
 
-        SAFE_ASSERT(start < text.length() && end <= text.length(), "validateDomainLabels bounds check");
+        SAFE_ASSERT(start < text.length() && end <= text.length(), "validateDomainLabels bounds");
 
         if (text[start] == '.' || text[start] == '-' ||
             text[end - 1] == '.' || text[end - 1] == '-')
@@ -353,7 +464,7 @@ private:
             }
         }
 
-        size_t lastDotPos = std::string::npos;
+        size_t lastDotPos = std::string_view::npos;
         for (size_t i = end; i-- > start;)
         {
             if (text[i] == '.')
@@ -363,7 +474,7 @@ private:
             }
         }
 
-        if (lastDotPos == std::string::npos || lastDotPos == start || lastDotPos >= end - 1)
+        if (lastDotPos == std::string_view::npos || lastDotPos == start || lastDotPos >= end - 1)
             return false;
 
         size_t labelStart = start;
@@ -377,7 +488,6 @@ private:
                 if (labelLen == 0 || labelLen > MAX_LABEL_LENGTH)
                     return false;
 
-                // SAFETY: Check bounds before access
                 if (labelStart >= text.length() || labelStart + labelLen > text.length())
                     return false;
 
@@ -416,65 +526,22 @@ private:
         return true;
     }
 
-    // SAFETY: Added comprehensive bounds checking
-    static bool validateIPLiteral(const std::string &text, size_t start, size_t end) noexcept
+    [[nodiscard]] static bool validateIPv4(std::string_view text, size_t start, size_t end) noexcept
     {
-        // Bounds check FIRST
-        if (start >= end || end > text.length())
-            return false;
-
-        SAFE_ASSERT(start < text.length() && end <= text.length(), "validateIPLiteral bounds check");
-
-        if (text[start] != '[' || text[end - 1] != ']')
-            return false;
-
-        size_t ipStart = start + 1;
-        size_t ipEnd = end - 1;
-
-        if (ipStart >= ipEnd || ipEnd > text.length())
-            return false;
-
-        // SAFETY: Check bounds for substring access
-        if (end - start > 6 && ipStart + 5 <= text.length())
-        {
-            const char *p = text.data() + ipStart;
-            if (p[0] == 'I' && p[1] == 'P' && p[2] == 'v' && p[3] == '6' && p[4] == ':')
-            {
-                return validateIPv6(text, ipStart + 5, ipEnd);
-            }
-        }
-
-        if (validateIPv4(text, ipStart, ipEnd))
-            return true;
-
-        for (size_t i = ipStart; i < ipEnd; ++i)
-        {
-            SAFE_ASSERT(i < text.length(), "validateIPLiteral loop bounds");
-            if (text[i] == ':')
-                return validateIPv6(text, ipStart, ipEnd);
-        }
-
-        return false;
-    }
-
-    // SAFETY: Added comprehensive bounds checking
-    static bool validateIPv4(const std::string &text, size_t start, size_t end) noexcept
-    {
-        // Bounds check FIRST
         if (start >= end || end > text.length())
             return false;
 
         try
         {
-            std::vector<int> octets;
-            octets.reserve(4); // Pre-allocate for efficiency
+            std::array<int, 4> octets{};
+            size_t octetIdx = 0;
             size_t numStart = start;
 
-            for (size_t i = start; i <= end; ++i)
+            for (size_t i = start; i <= end && octetIdx < 4; ++i)
             {
                 if (i == end || text[i] == '.')
                 {
-                    if (i == numStart)
+                    if (i == numStart || octetIdx >= 4)
                         return false;
 
                     int octet = 0;
@@ -484,32 +551,34 @@ private:
                         if (!CharacterClassifier::isDigit(text[j]))
                             return false;
 
+                        // Check for overflow before multiplication
+                        if (octet > 25 || (octet == 25 && text[j] > '5'))
+                            return false;
+
                         int newOctet = octet * 10 + (text[j] - '0');
-                        // Check for integer overflow
-                        if (newOctet < octet)
+                        if (newOctet < octet) // Additional overflow check
                             return false;
                         octet = newOctet;
                     }
 
                     if (octet > 255)
                         return false;
-                    octets.push_back(octet);
+
+                    octets[octetIdx++] = octet;
                     numStart = i + 1;
                 }
             }
 
-            return octets.size() == 4;
+            return octetIdx == 4;
         }
-        catch (const std::bad_alloc &)
+        catch (...)
         {
             return false;
         }
     }
 
-    // SAFETY: Added comprehensive bounds checking
-    static bool validateIPv6(const std::string &text, size_t start, size_t end) noexcept
+    [[nodiscard]] static bool validateIPv6(std::string_view text, size_t start, size_t end) noexcept
     {
-        // Bounds check FIRST
         if (start >= end || end > text.length())
             return false;
 
@@ -517,12 +586,10 @@ private:
         int compressionPos = -1;
         size_t pos = start;
 
-        // SAFETY: Check bounds before two-character lookahead
         if (pos + 1 < end && pos + 1 < text.length() && text[pos] == ':' && text[pos + 1] == ':')
         {
             compressionPos = 0;
             pos += 2;
-
             if (pos >= end)
                 return true;
         }
@@ -571,7 +638,6 @@ private:
             {
                 ++pos;
 
-                // SAFETY: Check bounds before lookahead
                 if (pos < end && pos < text.length() && text[pos] == ':')
                 {
                     if (compressionPos != -1)
@@ -604,11 +670,47 @@ private:
         }
     }
 
-public:
-    // SAFETY: Added bounds checking before delegation
-    static bool validate(const std::string &text, size_t start, size_t end) noexcept
+    [[nodiscard]] static bool validateIPLiteral(std::string_view text, size_t start, size_t end) noexcept
     {
-        // Pre-validate bounds before delegating
+        if (start >= end || end > text.length())
+            return false;
+
+        SAFE_ASSERT(start < text.length() && end <= text.length(), "validateIPLiteral bounds");
+
+        if (text[start] != '[' || text[end - 1] != ']')
+            return false;
+
+        size_t ipStart = start + 1;
+        size_t ipEnd = end - 1;
+
+        if (ipStart >= ipEnd || ipEnd > text.length())
+            return false;
+
+        if (end - start > 6 && ipStart + 5 <= text.length())
+        {
+            const char *p = text.data() + ipStart;
+            if (p[0] == 'I' && p[1] == 'P' && p[2] == 'v' && p[3] == '6' && p[4] == ':')
+            {
+                return validateIPv6(text, ipStart + 5, ipEnd);
+            }
+        }
+
+        if (validateIPv4(text, ipStart, ipEnd))
+            return true;
+
+        for (size_t i = ipStart; i < ipEnd; ++i)
+        {
+            SAFE_ASSERT(i < text.length(), "validateIPLiteral loop bounds");
+            if (text[i] == ':')
+                return validateIPv6(text, ipStart, ipEnd);
+        }
+
+        return false;
+    }
+
+public:
+    [[nodiscard]] static bool validate(std::string_view text, size_t start, size_t end) noexcept
+    {
         if (start >= end || end > text.length())
             return false;
 
@@ -630,22 +732,30 @@ private:
     static constexpr size_t MIN_EMAIL_SIZE = 5;
     static constexpr size_t MAX_EMAIL_SIZE = 320;
 
+    mutable ValidationStats stats_;
+
 public:
-    bool isValid(const std::string &email) const noexcept override
+    [[nodiscard]] bool isValid(std::string_view email) const noexcept override
     {
+        stats_.recordValidation();
+
         try
         {
             const size_t len = email.length();
 
-            // SAFETY: Input validation at API boundary
             if (UNLIKELY(len < MIN_EMAIL_SIZE || len > MAX_EMAIL_SIZE))
+            {
+                stats_.recordError();
                 return false;
+            }
 
-            // SAFETY: Validate string integrity
             if (UNLIKELY(email.data() == nullptr))
+            {
+                stats_.recordError();
                 return false;
+            }
 
-            size_t atPos = std::string::npos;
+            size_t atPos = std::string_view::npos;
             bool inQuotes = false;
             bool escaped = false;
 
@@ -675,35 +785,50 @@ public:
 
                 if (c == '@' && !inQuotes)
                 {
-                    if (UNLIKELY(atPos != std::string::npos))
+                    if (UNLIKELY(atPos != std::string_view::npos))
+                    {
+                        stats_.recordError();
                         return false;
+                    }
                     atPos = i;
                 }
             }
 
-            if (UNLIKELY(atPos == std::string::npos || atPos == 0 || atPos >= len - 1))
+            if (UNLIKELY(atPos == std::string_view::npos || atPos == 0 || atPos >= len - 1))
+            {
+                stats_.recordError();
                 return false;
+            }
 
-            // SAFETY: Bounds are validated by the validate functions
-            return LocalPartValidator::validate(email, 0, atPos,
-                                                LocalPartValidator::ValidationMode::EXACT) &&
-                   DomainPartValidator::validate(email, atPos + 1, len);
+            bool result = LocalPartValidator::validate(email, 0, atPos,
+                                                       LocalPartValidator::ValidationMode::EXACT) &&
+                          DomainPartValidator::validate(email, atPos + 1, len);
+
+            if (!result)
+                stats_.recordError();
+
+            return result;
         }
         catch (const std::bad_alloc &)
         {
-            // Out of memory during validation
+            stats_.recordError();
             return false;
         }
         catch (const std::exception &)
         {
-            // Any other standard exception
+            stats_.recordError();
             return false;
         }
         catch (...)
         {
-            // Catch-all for unknown exceptions
+            stats_.recordError();
             return false;
         }
+    }
+
+    [[nodiscard]] const ValidationStats &getStats() const noexcept override
+    {
+        return stats_;
     }
 };
 
@@ -721,9 +846,11 @@ public:
 class EmailScanner : public IEmailScanner
 {
 private:
-    static constexpr size_t MAX_INPUT_SIZE = 10 * 1024 * 1024; // 10 MB limit for DoS protection
+    static constexpr size_t MAX_INPUT_SIZE = 10 * 1024 * 1024;
     static constexpr size_t MAX_LEFT_SCAN = 4096;
-    static constexpr size_t MAX_EMAILS_EXTRACT = 10000; // Limit for DoS protection
+    static constexpr size_t MAX_EMAILS_EXTRACT = 10000;
+
+    mutable ValidationStats stats_;
 
     struct EmailBoundaries
     {
@@ -733,10 +860,9 @@ private:
         size_t skipTo;
     };
 
-    // SAFETY: Added bounds checking
-    static FORCE_INLINE size_t findFirstAlnum(const char *data, size_t dataLen, size_t pos, size_t limit) noexcept
+    [[nodiscard]] static FORCE_INLINE size_t findFirstAlnum(const char *data, size_t dataLen,
+                                                            size_t pos, size_t limit) noexcept
     {
-        // SAFETY: Ensure limit doesn't exceed data length
         limit = std::min(limit, dataLen);
 
         while (pos < limit)
@@ -746,13 +872,12 @@ private:
                 return pos;
             ++pos;
         }
-        return std::string::npos;
+        return std::string_view::npos;
     }
 
-    // SAFETY: Added bounds checking
-    static FORCE_INLINE size_t findFirstAtext(const char *data, size_t dataLen, size_t pos, size_t limit) noexcept
+    [[nodiscard]] static FORCE_INLINE size_t findFirstAtext(const char *data, size_t dataLen,
+                                                            size_t pos, size_t limit) noexcept
     {
-        // SAFETY: Ensure limit doesn't exceed data length
         limit = std::min(limit, dataLen);
 
         while (pos < limit)
@@ -762,23 +887,20 @@ private:
                 return pos;
             ++pos;
         }
-        return std::string::npos;
+        return std::string_view::npos;
     }
 
-    // SAFETY: Added comprehensive bounds checking throughout
-    static EmailBoundaries findEmailBoundaries(const std::string &text, size_t atPos,
-                                               size_t minScannedIndex) noexcept
+    [[nodiscard]] static EmailBoundaries findEmailBoundaries(std::string_view text, size_t atPos,
+                                                             size_t minScannedIndex) noexcept
     {
         const size_t len = text.length();
         const char *data = text.data();
 
-        // SAFETY: Validate atPos is within bounds
         if (UNLIKELY(atPos >= len))
             return {atPos, atPos, false, atPos};
 
         size_t end = atPos + 1;
 
-        // SAFETY: Check bounds before access
         if (UNLIKELY(end < len && end < text.length() && data[end] == '['))
         {
             return {atPos, atPos, false, atPos + 1};
@@ -792,16 +914,15 @@ private:
 
         while (end > atPos + 1 && data[end - 1] == '.')
         {
-            SAFE_ASSERT(end > 0 && end - 1 < len, "findEmailBoundaries trailing dot removal bounds");
+            SAFE_ASSERT(end > 0 && end - 1 < len, "findEmailBoundaries trailing dot removal");
             --end;
         }
 
-        // SAFETY: Check bounds before access
         if (end < len && data[end] == '@')
         {
             while (end > atPos + 1 && data[end - 1] == '-')
             {
-                SAFE_ASSERT(end > 0 && end - 1 < len, "findEmailBoundaries hyphen removal bounds");
+                SAFE_ASSERT(end > 0 && end - 1 < len, "findEmailBoundaries hyphen removal");
                 --end;
             }
         }
@@ -817,7 +938,7 @@ private:
 
         while (start > effectiveMin)
         {
-            SAFE_ASSERT(start > 0 && start - 1 < len, "findEmailBoundaries left scan bounds");
+            SAFE_ASSERT(start > 0 && start - 1 < len, "findEmailBoundaries left scan");
             unsigned char prevChar = data[start - 1];
 
             if (prevChar == '@')
@@ -825,10 +946,9 @@ private:
                 break;
             }
 
-            // SAFETY: Check bounds for two-character lookback
             if (prevChar == '.' && start > effectiveMin + 1 && start >= 2)
             {
-                SAFE_ASSERT(start - 2 < len, "findEmailBoundaries double dot check bounds");
+                SAFE_ASSERT(start - 2 < len, "findEmailBoundaries double dot check");
                 if (data[start - 2] == '.')
                 {
                     hitInvalidChar = true;
@@ -852,7 +972,7 @@ private:
                         if (lookback < lookbackLimit || lookback >= atPos || lookback >= len)
                             break;
 
-                        SAFE_ASSERT(lookback < len, "findEmailBoundaries lookback bounds");
+                        SAFE_ASSERT(lookback < len, "findEmailBoundaries lookback");
                         unsigned char c = data[lookback];
                         if (CharacterClassifier::isAtext(c) && c != '.')
                         {
@@ -882,10 +1002,9 @@ private:
             {
                 bool hasMatchingQuote = false;
 
-                // SAFETY: Check bounds for two-character lookback
                 if (start > effectiveMin + 1 && start >= 2)
                 {
-                    SAFE_ASSERT(start - 2 < len, "findEmailBoundaries quote check bounds");
+                    SAFE_ASSERT(start - 2 < len, "findEmailBoundaries quote check");
                     if (data[start - 2] == prevChar)
                     {
                         --start;
@@ -895,7 +1014,6 @@ private:
 
                 if (end < len && data[end] == prevChar)
                 {
-                    // SAFETY: Check bounds for lookahead
                     if (end + 1 < len && data[end + 1] == prevChar)
                     {
                         --start;
@@ -912,7 +1030,7 @@ private:
                 {
                     if (start > effectiveMin + 1 && start >= 2)
                     {
-                        SAFE_ASSERT(start - 2 < len, "findEmailBoundaries quote context bounds");
+                        SAFE_ASSERT(start - 2 < len, "findEmailBoundaries quote context");
                         unsigned char prevPrevChar = data[start - 2];
                         if (prevPrevChar == '=' || prevPrevChar == ':' ||
                             CharacterClassifier::isScanBoundary(prevPrevChar) ||
@@ -950,7 +1068,7 @@ private:
         {
             size_t recoveryPos = findFirstAlnum(data, len, std::max(invalidCharPos, effectiveMin), atPos);
 
-            if (recoveryPos != std::string::npos)
+            if (recoveryPos != std::string_view::npos)
             {
                 start = recoveryPos;
                 didRecovery = true;
@@ -958,7 +1076,7 @@ private:
             else
             {
                 recoveryPos = findFirstAtext(data, len, std::max(invalidCharPos, effectiveMin), atPos);
-                if (recoveryPos != std::string::npos)
+                if (recoveryPos != std::string_view::npos)
                 {
                     start = recoveryPos;
                     didRecovery = true;
@@ -973,18 +1091,18 @@ private:
 
         while (start < atPos && data[start] == '.')
         {
-            SAFE_ASSERT(start < len, "findEmailBoundaries leading dot removal bounds");
+            SAFE_ASSERT(start < len, "findEmailBoundaries leading dot removal");
             ++start;
         }
 
         if (start < atPos && start > effectiveMin && start > 0)
         {
-            SAFE_ASSERT(start - 1 < len, "findEmailBoundaries char before start check bounds");
+            SAFE_ASSERT(start - 1 < len, "findEmailBoundaries char before start");
             unsigned char charBeforeStart = data[start - 1];
             if (CharacterClassifier::isInvalidLocalChar(charBeforeStart))
             {
                 size_t firstAlnum = findFirstAlnum(data, len, start, atPos);
-                if (firstAlnum != std::string::npos)
+                if (firstAlnum != std::string_view::npos)
                 {
                     start = firstAlnum;
                 }
@@ -1001,7 +1119,7 @@ private:
 
         if (start > effectiveMin && start > 0)
         {
-            SAFE_ASSERT(start - 1 < len, "findEmailBoundaries boundary validation bounds");
+            SAFE_ASSERT(start - 1 < len, "findEmailBoundaries boundary validation");
             unsigned char prevChar = data[start - 1];
 
             if (didRecovery)
@@ -1020,10 +1138,9 @@ private:
                 validBoundaries = false;
             }
 
-            // SAFETY: Check bounds for two-character lookback
             if (CharacterClassifier::isQuoteChar(prevChar) && start > effectiveMin + 1 && start >= 2)
             {
-                SAFE_ASSERT(start - 2 < len, "findEmailBoundaries quote boundary check bounds");
+                SAFE_ASSERT(start - 2 < len, "findEmailBoundaries quote boundary");
                 unsigned char prevPrevChar = data[start - 2];
                 if (CharacterClassifier::isScanBoundary(prevPrevChar) ||
                     prevPrevChar == '=' || prevPrevChar == ':' ||
@@ -1033,10 +1150,9 @@ private:
                 }
             }
 
-            // SAFETY: Check bounds for two-character lookback
             if (prevChar == '/' && start > effectiveMin + 1 && start >= 2)
             {
-                SAFE_ASSERT(start - 2 < len, "findEmailBoundaries slash check bounds");
+                SAFE_ASSERT(start - 2 < len, "findEmailBoundaries slash check");
                 if (data[start - 2] == '/')
                 {
                     validBoundaries = true;
@@ -1046,7 +1162,7 @@ private:
 
         if (end < len && validBoundaries)
         {
-            SAFE_ASSERT(end < len, "findEmailBoundaries right boundary check bounds");
+            SAFE_ASSERT(end < len, "findEmailBoundaries right boundary");
             unsigned char nextChar = data[end];
             if (!CharacterClassifier::isScanRightBoundary(nextChar) &&
                 nextChar != '\'' && nextChar != '`' && nextChar != '"' &&
@@ -1060,19 +1176,25 @@ private:
     }
 
 public:
-    bool contains(const std::string &text) const noexcept override
+    [[nodiscard]] bool contains(std::string_view text) const noexcept override
     {
+        stats_.recordScan();
+
         try
         {
             const size_t len = text.length();
 
-            // SAFETY: Input validation at API boundary
             if (UNLIKELY(len > MAX_INPUT_SIZE || len < 5))
+            {
+                stats_.recordError();
                 return false;
+            }
 
-            // SAFETY: Validate string integrity
             if (UNLIKELY(text.data() == nullptr && len > 0))
+            {
+                stats_.recordError();
                 return false;
+            }
 
             const char *data = text.data();
             size_t pos = 0;
@@ -1125,43 +1247,48 @@ public:
         }
         catch (const std::bad_alloc &)
         {
-            // Out of memory during scanning
+            stats_.recordError();
             return false;
         }
         catch (const std::exception &)
         {
-            // Any other standard exception
+            stats_.recordError();
             return false;
         }
         catch (...)
         {
-            // Catch-all for unknown exceptions
+            stats_.recordError();
             return false;
         }
     }
 
-    std::vector<std::string> extract(const std::string &text) const noexcept override
+    [[nodiscard]] std::vector<std::string> extract(std::string_view text) const noexcept override
     {
+        stats_.recordExtract();
+
         std::vector<std::string> emails;
 
         try
         {
             const size_t len = text.length();
 
-            // SAFETY: Input validation at API boundary
             if (UNLIKELY(len > MAX_INPUT_SIZE || len < 5))
+            {
+                stats_.recordError();
                 return emails;
+            }
 
-            // SAFETY: Validate string integrity
             if (UNLIKELY(text.data() == nullptr && len > 0))
+            {
+                stats_.recordError();
                 return emails;
+            }
 
             emails.reserve(std::min<size_t>(10, len / 30));
 
-            // SAFETY: Use owned strings instead of string_view to avoid lifetime issues
             size_t expected_unique = std::min<size_t>(len / 30, MAX_EMAILS_EXTRACT);
             size_t reserve_size = (expected_unique * 13) / 10 + 1;
-            std::unordered_set<std::string> seen; // CHANGED: Use std::string instead of string_view
+            std::unordered_set<std::string> seen;
             seen.reserve(reserve_size);
 
             const char *data = text.data();
@@ -1172,7 +1299,6 @@ public:
 
             while (pos < len)
             {
-                // SAFETY: DoS protection - limit number of extracted emails
                 if (UNLIKELY(extractedCount >= MAX_EMAILS_EXTRACT))
                     break;
 
@@ -1208,7 +1334,6 @@ public:
                                                  LocalPartValidator::ValidationMode::SCAN) &&
                     DomainPartValidator::validate(text, atPos + 1, boundaries.end))
                 {
-                    // SAFETY: Validate bounds before creating substring
                     if (UNLIKELY(boundaries.start >= text.length() ||
                                  boundaries.end > text.length() ||
                                  boundaries.start >= boundaries.end))
@@ -1217,8 +1342,7 @@ public:
                         continue;
                     }
 
-                    // SAFETY: Create owned string instead of string_view
-                    std::string email = text.substr(boundaries.start, boundaries.end - boundaries.start);
+                    std::string email(text.substr(boundaries.start, boundaries.end - boundaries.start));
 
                     auto insert_result = seen.insert(email);
                     if (insert_result.second)
@@ -1238,26 +1362,30 @@ public:
         }
         catch (const std::bad_alloc &)
         {
-            // Out of memory - return what we have so far
-            // In production, you might want to log this
+            stats_.recordError();
         }
         catch (const std::length_error &)
         {
-            // String operation error - clear and return
+            stats_.recordError();
             emails.clear();
         }
         catch (const std::exception &)
         {
-            // Any other standard exception - clear and return
+            stats_.recordError();
             emails.clear();
         }
         catch (...)
         {
-            // Catch-all for unknown exceptions
+            stats_.recordError();
             emails.clear();
         }
 
         return emails;
+    }
+
+    [[nodiscard]] const ValidationStats &getStats() const noexcept override
+    {
+        return stats_;
     }
 };
 
@@ -1267,15 +1395,41 @@ public:
 
 class EmailValidatorFactory
 {
+private:
+    // Thread-safe singleton instances (C++11 magic statics)
+    static IEmailValidator &getSharedValidator()
+    {
+        static EmailValidator instance;
+        return instance;
+    }
+
+    static IEmailScanner &getSharedScanner()
+    {
+        static EmailScanner instance;
+        return instance;
+    }
+
 public:
-    static std::unique_ptr<IEmailValidator> createValidator()
+    // Create new instances (thread-safe, each thread gets its own)
+    [[nodiscard]] static std::unique_ptr<IEmailValidator> createValidator()
     {
         return std::make_unique<EmailValidator>();
     }
 
-    static std::unique_ptr<IEmailScanner> createScanner()
+    [[nodiscard]] static std::unique_ptr<IEmailScanner> createScanner()
     {
         return std::make_unique<EmailScanner>();
+    }
+
+    // Get shared singleton instance (thread-safe for concurrent reads)
+    [[nodiscard]] static IEmailValidator &getValidator()
+    {
+        return getSharedValidator();
+    }
+
+    [[nodiscard]] static IEmailScanner &getScanner()
+    {
+        return getSharedScanner();
     }
 };
 
