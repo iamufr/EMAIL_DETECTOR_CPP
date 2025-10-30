@@ -310,7 +310,6 @@ private:
         bool prevDot = false;
         for (size_t i = start; i < end; ++i)
         {
-            SAFE_ASSERT(i < text.length(), "validateDotAtom loop bounds");
             unsigned char c = text[i];
             if (c == '.')
             {
@@ -325,6 +324,7 @@ private:
                 prevDot = false;
             }
         }
+        SAFE_ASSERT(end <= text.length(), "validateDotAtom completed");
         return true;
     }
 
@@ -514,12 +514,15 @@ private:
         if (tldLen < 1)
             return false;
 
+        const char *data = text.data();
+        const size_t dataLen = text.length();
+
         for (size_t i = tldStart; i < end; ++i)
         {
-            SAFE_ASSERT(i < text.length(), "validateDomainLabels TLD check bounds");
-            if (!CharacterClassifier::isAlphaNum(text[i]))
+            if (!CharacterClassifier::isAlphaNum(data[i]))
                 return false;
         }
+        SAFE_ASSERT(end <= dataLen, "validateDomainLabels TLD check completed");
 
         return true;
     }
@@ -1340,12 +1343,13 @@ public:
                         continue;
                     }
 
-                    std::string email(text.substr(boundaries.start, boundaries.end - boundaries.start));
+                    auto [it, inserted] = seen.emplace(
+                        text.data() + boundaries.start,
+                        boundaries.end - boundaries.start);
 
-                    auto insert_result = seen.insert(email);
-                    if (insert_result.second)
+                    if (inserted)
                     {
-                        emails.push_back(std::move(email));
+                        emails.emplace_back(*it);
                         ++extractedCount;
                     }
 
