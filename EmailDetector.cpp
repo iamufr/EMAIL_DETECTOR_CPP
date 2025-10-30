@@ -437,7 +437,8 @@ private:
         // SAFETY: Check bounds for substring access
         if (end - start > 6 && ipStart + 5 <= text.length())
         {
-            if (text.substr(ipStart, 5) == "IPv6:")
+            const char *p = text.data() + ipStart;
+            if (p[0] == 'I' && p[1] == 'P' && p[2] == 'v' && p[3] == '6' && p[4] == ':')
             {
                 return validateIPv6(text, ipStart + 5, ipEnd);
             }
