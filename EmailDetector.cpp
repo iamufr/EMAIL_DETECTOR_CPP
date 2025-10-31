@@ -428,6 +428,7 @@ public:
 // ============================================================================
 // DOMAIN PART VALIDATOR (Single Responsibility Principle)
 // ============================================================================
+
 class DomainPartValidator
 {
 private:
