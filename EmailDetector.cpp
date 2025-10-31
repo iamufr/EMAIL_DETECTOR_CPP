@@ -147,7 +147,7 @@ private:
     static constexpr unsigned char CHAR_INVALID_LOCAL = 0x40;
     static constexpr unsigned char CHAR_BOUNDARY = 0x80;
 
-    // ✅ Direct static constexpr array - no function call needed
+    // Direct static constexpr array
     inline static constexpr unsigned char charTable[256] = {
         // 0-31: control characters
         0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0xC0, 0xC0, 0x40, 0x40, 0xC0, 0x40, 0x40,
@@ -177,52 +177,52 @@ private:
 public:
     [[nodiscard]] static FORCE_INLINE bool isAlpha(unsigned char c) noexcept
     {
-        return (charTable[c] & CHAR_ALPHA) != 0; // ✅ Direct array access
+        return (charTable[c] & CHAR_ALPHA) != 0; // Direct array access
     }
 
     [[nodiscard]] static FORCE_INLINE bool isDigit(unsigned char c) noexcept
     {
-        return (charTable[c] & CHAR_DIGIT) != 0; // ✅ Direct array access
+        return (charTable[c] & CHAR_DIGIT) != 0; // Direct array access
     }
 
     [[nodiscard]] static FORCE_INLINE bool isAlphaNum(unsigned char c) noexcept
     {
-        return (charTable[c] & (CHAR_ALPHA | CHAR_DIGIT)) != 0; // ✅ Direct array access
+        return (charTable[c] & (CHAR_ALPHA | CHAR_DIGIT)) != 0; // Direct array access
     }
 
     [[nodiscard]] static FORCE_INLINE bool isHexDigit(unsigned char c) noexcept
     {
-        return (charTable[c] & CHAR_HEX) != 0; // ✅ Direct array access
+        return (charTable[c] & CHAR_HEX) != 0; // Direct array access
     }
 
     [[nodiscard]] static FORCE_INLINE bool isAtext(unsigned char c) noexcept
     {
-        return (charTable[c] & (CHAR_ALPHA | CHAR_DIGIT | CHAR_ATEXT_SPECIAL)) != 0; // ✅ Direct array access
+        return (charTable[c] & (CHAR_ALPHA | CHAR_DIGIT | CHAR_ATEXT_SPECIAL)) != 0; // Direct array access
     }
 
     [[nodiscard]] static FORCE_INLINE bool isDomainChar(unsigned char c) noexcept
     {
-        return (charTable[c] & CHAR_DOMAIN) != 0; // ✅ Direct array access
+        return (charTable[c] & CHAR_DOMAIN) != 0; // Direct array access
     }
 
     [[nodiscard]] static FORCE_INLINE bool isScanBoundary(unsigned char c) noexcept
     {
-        return (charTable[c] & CHAR_BOUNDARY) != 0; // ✅ Direct array access
+        return (charTable[c] & CHAR_BOUNDARY) != 0; // Direct array access
     }
 
     [[nodiscard]] static FORCE_INLINE bool isScanRightBoundary(unsigned char c) noexcept
     {
-        return (charTable[c] & CHAR_BOUNDARY) != 0 || c == '.' || c == '!' || c == '?'; // ✅ Direct array access
+        return (charTable[c] & CHAR_BOUNDARY) != 0 || c == '.' || c == '!' || c == '?'; // Direct array access
     }
 
     [[nodiscard]] static FORCE_INLINE bool isInvalidLocalChar(unsigned char c) noexcept
     {
-        return (charTable[c] & CHAR_INVALID_LOCAL) != 0; // ✅ Direct array access
+        return (charTable[c] & CHAR_INVALID_LOCAL) != 0; // Direct array access
     }
 
     [[nodiscard]] static FORCE_INLINE bool isQuoteChar(unsigned char c) noexcept
     {
-        return (charTable[c] & CHAR_QUOTE) != 0; // ✅ Direct array access
+        return (charTable[c] & CHAR_QUOTE) != 0; // Direct array access
     }
 
     [[nodiscard]] static FORCE_INLINE bool isQtextOrQpair(unsigned char c) noexcept
@@ -231,7 +231,7 @@ public:
     }
 };
 
-// ✅ Initialize at namespace scope for C++14/17 compatibility
+// Initialize at namespace scope for C++14/17 compatibility
 constexpr unsigned char CharacterClassifier::charTable[256];
 
 // ============================================================================
@@ -428,7 +428,6 @@ public:
 // ============================================================================
 // DOMAIN PART VALIDATOR (Single Responsibility Principle)
 // ============================================================================
-
 class DomainPartValidator
 {
 private:
@@ -527,6 +526,7 @@ private:
         return true;
     }
 
+    // IPv4 validation with proper overflow protection
     [[nodiscard]] static bool validateIPv4(std::string_view text, size_t start, size_t end) noexcept
     {
         if (start >= end || end > text.length())
@@ -546,20 +546,26 @@ private:
                         return false;
 
                     int octet = 0;
+                    size_t digitCount = 0;
+
                     for (size_t j = numStart; j < i; ++j)
                     {
                         SAFE_ASSERT(j < text.length(), "validateIPv4 parsing bounds");
                         if (!CharacterClassifier::isDigit(text[j]))
                             return false;
 
-                        // Check for overflow before multiplication
-                        if (octet > 25 || (octet == 25 && text[j] > '5'))
+                        // Prevent leading zeros (RFC compliance)
+                        if (digitCount == 0 && text[j] == '0' && (i - numStart) > 1)
                             return false;
 
-                        int newOctet = octet * 10 + (text[j] - '0');
-                        if (newOctet < octet) // Additional overflow check
+                        int digit = text[j] - '0';
+
+                        // Check overflow BEFORE multiplication
+                        if (octet > (INT_MAX - digit) / 10)
                             return false;
-                        octet = newOctet;
+
+                        octet = octet * 10 + digit;
+                        ++digitCount;
                     }
 
                     if (octet > 255)
@@ -578,6 +584,7 @@ private:
         }
     }
 
+    // IPv6 validation with iteration limits
     [[nodiscard]] static bool validateIPv6(std::string_view text, size_t start, size_t end) noexcept
     {
         if (start >= end || end > text.length())
@@ -586,6 +593,9 @@ private:
         int segmentCount = 0;
         int compressionPos = -1;
         size_t pos = start;
+
+        size_t iterations = 0;
+        static constexpr size_t MAX_IPV6_ITERATIONS = 1000;
 
         if (pos + 1 < end && pos + 1 < text.length() && text[pos] == ':' && text[pos + 1] == ':')
         {
@@ -599,7 +609,7 @@ private:
             return false;
         }
 
-        while (pos < end)
+        while (pos < end && iterations++ < MAX_IPV6_ITERATIONS)
         {
             size_t segStart = pos;
             int hexDigits = 0;
@@ -615,6 +625,9 @@ private:
             if (hexDigits > 0)
             {
                 ++segmentCount;
+
+                if (segmentCount > 8)
+                    return false;
 
                 if (pos < end && pos < text.length() && text[pos] == '.')
                 {
@@ -660,6 +673,9 @@ private:
                 return false;
             }
         }
+
+        if (iterations >= MAX_IPV6_ITERATIONS)
+            return false;
 
         if (compressionPos != -1)
         {
