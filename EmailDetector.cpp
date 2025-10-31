@@ -86,19 +86,19 @@ public:
 
     [[nodiscard]] uint64_t getValidationCount() const noexcept
     {
-        return validationCount.load(std::memory_order_relaxed);
+        return validationCount.load(std::memory_order_acquire);
     }
     [[nodiscard]] uint64_t getScanCount() const noexcept
     {
-        return scanCount.load(std::memory_order_relaxed);
+        return scanCount.load(std::memory_order_acquire);
     }
     [[nodiscard]] uint64_t getExtractCount() const noexcept
     {
-        return extractCount.load(std::memory_order_relaxed);
+        return extractCount.load(std::memory_order_acquire);
     }
     [[nodiscard]] uint64_t getErrorCount() const noexcept
     {
-        return errorCount.load(std::memory_order_relaxed);
+        return errorCount.load(std::memory_order_acquire);
     }
 
     void reset() noexcept
@@ -107,6 +107,41 @@ public:
         scanCount.store(0, std::memory_order_relaxed);
         extractCount.store(0, std::memory_order_relaxed);
         errorCount.store(0, std::memory_order_relaxed);
+    }
+
+    struct StatsSnapshot
+    {
+        uint64_t validations;
+        uint64_t scans;
+        uint64_t extracts;
+        uint64_t errors;
+
+        // Helper methods for common calculations
+        [[nodiscard]] double getErrorRate() const noexcept
+        {
+            return validations > 0
+                       ? static_cast<double>(errors) / validations
+                       : 0.0;
+        }
+
+        [[nodiscard]] uint64_t getSuccessCount() const noexcept
+        {
+            return validations > errors ? validations - errors : 0;
+        }
+
+        [[nodiscard]] bool hasErrors() const noexcept
+        {
+            return errors > 0;
+        }
+    };
+
+    [[nodiscard]] StatsSnapshot getSnapshot() const noexcept
+    {
+        return {
+            validationCount.load(std::memory_order_acquire),
+            scanCount.load(std::memory_order_acquire),
+            extractCount.load(std::memory_order_acquire),
+            errorCount.load(std::memory_order_acquire)};
     }
 };
 
