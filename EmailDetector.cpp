@@ -1,21 +1,22 @@
-#include <array>
-#include <string_view>
-#include <iostream>
-#include <string>
-#include <vector>
-#include <thread>
-#include <atomic>
-#include <mutex>
-#include <shared_mutex>
-#include <chrono>
 #include <algorithm>
-#include <stdexcept>
-#include <unordered_set>
-#include <memory>
-#include <optional>
-#include <cstring>
+#include <array>
+#include <atomic>
 #include <cassert>
+#include <chrono>
+#include <climits>
+#include <cstring>
+#include <iostream>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <shared_mutex>
 #include <span>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <unordered_set>
+#include <vector>
 
 // ============================================================================
 // COMPILER & PLATFORM DETECTION
@@ -266,9 +267,6 @@ public:
     }
 };
 
-// Initialize at namespace scope for C++14/17 compatibility
-constexpr unsigned char CharacterClassifier::charTable[256];
-
 // ============================================================================
 // LOCAL PART VALIDATOR (Single Responsibility Principle)
 // ============================================================================
@@ -311,10 +309,12 @@ private:
 
     [[nodiscard]] static bool validateQuotedString(std::string_view text, size_t start, size_t end) noexcept
     {
-        if (start >= end || end > text.length() || end - start > MAX_LOCAL_PART + 2)
+        const size_t len = text.length();
+
+        if (start >= end || end > len || end - start > MAX_LOCAL_PART + 2)
             return false;
 
-        SAFE_ASSERT(start < text.length() && end <= text.length(), "validateQuotedString bounds");
+        SAFE_ASSERT(start < len && end <= len, "validateQuotedString bounds");
 
         if (text[start] != '"' || text[end - 1] != '"')
             return false;
@@ -325,7 +325,9 @@ private:
         bool escaped = false;
         for (size_t i = start + 1; i < end - 1; ++i)
         {
-            SAFE_ASSERT(i < text.length(), "validateQuotedString loop bounds");
+            if (UNLIKELY(i >= len))
+                return false;
+
             unsigned char c = text[i];
             if (escaped)
             {
@@ -351,10 +353,12 @@ private:
 
     [[nodiscard]] static FORCE_INLINE bool validateScanMode(std::string_view text, size_t start, size_t end) noexcept
     {
-        if (UNLIKELY(start >= end || end > text.length() || end - start > MAX_LOCAL_PART))
+        const size_t len = text.length();
+
+        if (UNLIKELY(start >= end || end > len || end - start > MAX_LOCAL_PART))
             return false;
 
-        SAFE_ASSERT(start < text.length() && end <= text.length(), "validateScanMode bounds");
+        SAFE_ASSERT(start < len && end <= len, "validateScanMode bounds");
 
         if (UNLIKELY(text[start] == '"' || text[start] == '.' || text[end - 1] == '.'))
             return false;
@@ -362,7 +366,9 @@ private:
         bool prevDot = false;
         for (size_t i = start; i < end; ++i)
         {
-            SAFE_ASSERT(i < text.length(), "validateScanMode loop bounds");
+            if (UNLIKELY(i >= len))
+                return false;
+
             unsigned char c = text[i];
             if (c == '.')
             {
@@ -418,10 +424,12 @@ private:
 
     [[nodiscard]] static bool validateDomainLabels(std::string_view text, size_t start, size_t end) noexcept
     {
-        if (start >= end || end > text.length() || end - start < 3 || end - start > MAX_DOMAIN_PART)
+        const size_t len = text.length();
+
+        if (start >= end || end > len || end - start < 3 || end - start > MAX_DOMAIN_PART)
             return false;
 
-        SAFE_ASSERT(start < text.length() && end <= text.length(), "validateDomainLabels bounds");
+        SAFE_ASSERT(start < len && end <= len, "validateDomainLabels bounds");
 
         if (text[start] == '.' || text[start] == '-' ||
             text[end - 1] == '.' || text[end - 1] == '-')
@@ -430,7 +438,9 @@ private:
         bool prevDot = false;
         for (size_t i = start; i < end; ++i)
         {
-            SAFE_ASSERT(i < text.length(), "validateDomainLabels loop bounds");
+            if (UNLIKELY(i >= len))
+                return false;
+
             if (text[i] == '.')
             {
                 if (prevDot)
@@ -671,10 +681,12 @@ private:
 
     [[nodiscard]] static bool validateIPLiteral(std::string_view text, size_t start, size_t end) noexcept
     {
-        if (start >= end || end > text.length())
+        const size_t len = text.length();
+
+        if (start >= end || end > len)
             return false;
 
-        SAFE_ASSERT(start < text.length() && end <= text.length(), "validateIPLiteral bounds");
+        SAFE_ASSERT(start < len && end <= len, "validateIPLiteral bounds");
 
         if (text[start] != '[' || text[end - 1] != ']')
             return false;
@@ -682,13 +694,19 @@ private:
         size_t ipStart = start + 1;
         size_t ipEnd = end - 1;
 
-        if (ipStart >= ipEnd || ipEnd > text.length())
+        if (ipStart >= ipEnd || ipEnd > len)
             return false;
 
-        if (end - start > 6 && ipStart + 5 <= text.length())
+        if (end - start > 6 && ipStart + 5 <= len)
         {
-            const char *p = text.data() + ipStart;
-            if (p[0] == 'I' && p[1] == 'P' && p[2] == 'v' && p[3] == '6' && p[4] == ':')
+            const unsigned char *p = reinterpret_cast<const unsigned char *>(text.data() + ipStart);
+
+            // Normalize ASCII letters to lowercase by OR'ing 0x20 and compare to "ipv6:"
+            if (((p[0] | 0x20) == static_cast<unsigned char>('i')) &&
+                ((p[1] | 0x20) == static_cast<unsigned char>('p')) &&
+                ((p[2] | 0x20) == static_cast<unsigned char>('v')) &&
+                (p[3] == static_cast<unsigned char>('6')) &&
+                (p[4] == static_cast<unsigned char>(':')))
             {
                 return validateIPv6(text, ipStart + 5, ipEnd);
             }
@@ -699,7 +717,9 @@ private:
 
         for (size_t i = ipStart; i < ipEnd; ++i)
         {
-            SAFE_ASSERT(i < text.length(), "validateIPLiteral loop bounds");
+            if (UNLIKELY(i >= len))
+                return false;
+
             if (text[i] == ':')
                 return validateIPv6(text, ipStart, ipEnd);
         }
@@ -867,7 +887,8 @@ private:
         while (pos < limit)
         {
             SAFE_ASSERT(pos < dataLen, "findFirstAlnum bounds");
-            if (LIKELY(CharacterClassifier::isAlphaNum(data[pos])))
+            unsigned char uc = static_cast<unsigned char>(data[pos]);
+            if (CharacterClassifier::isAlphaNum(uc))
                 return pos;
             ++pos;
         }
@@ -882,7 +903,8 @@ private:
         while (pos < limit)
         {
             SAFE_ASSERT(pos < dataLen, "findFirstAtext bounds");
-            if (LIKELY(CharacterClassifier::isAtext(data[pos])))
+            unsigned char uc = static_cast<unsigned char>(data[pos]);
+            if (LIKELY(CharacterClassifier::isAtext(uc)))
                 return pos;
             ++pos;
         }
