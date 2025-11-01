@@ -1222,6 +1222,9 @@ public:
             size_t minScannedIndex = 0;
             size_t lastConsumedEnd = 0;
 
+            static constexpr size_t MAX_TOTAL_CHARS_SCANNED = 1'000'000;
+            size_t totalCharsScanned = 0;
+
             while (pos < len)
             {
                 const char *atPtr = static_cast<const char *>(std::memchr(data + pos, '@', len - pos));
@@ -1242,6 +1245,13 @@ public:
                 }
 
                 auto boundaries = findEmailBoundaries(text, atPos, minScannedIndex);
+                totalCharsScanned += (atPos - boundaries.start) + (boundaries.end - atPos);
+
+                if (totalCharsScanned > MAX_TOTAL_CHARS_SCANNED)
+                {
+                    stats_.recordError();
+                    break;
+                }
 
                 if (!boundaries.validBoundaries)
                 {
@@ -1320,6 +1330,9 @@ public:
 
             static constexpr size_t MAX_SCAN_ITERATIONS = 100'000;
             size_t iterations = 0;
+            static constexpr size_t MAX_TOTAL_CHARS_SCANNED = 1'000'000;
+            size_t totalCharsScanned = 0;
+
             while (pos < len && iterations++ < MAX_SCAN_ITERATIONS)
             {
                 if (UNLIKELY(extractedCount >= MAX_EMAILS_EXTRACT))
@@ -1343,6 +1356,13 @@ public:
                 }
 
                 auto boundaries = findEmailBoundaries(text, atPos, minScannedIndex);
+                totalCharsScanned += (atPos - boundaries.start) + (boundaries.end - atPos);
+
+                if (totalCharsScanned > MAX_TOTAL_CHARS_SCANNED)
+                {
+                    stats_.recordError();
+                    break;
+                }
 
                 if (!boundaries.validBoundaries)
                 {
