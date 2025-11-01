@@ -270,60 +270,6 @@ public:
 constexpr unsigned char CharacterClassifier::charTable[256];
 
 // ============================================================================
-// MEMORY-SAFE STRING VIEW WRAPPER
-// ============================================================================
-
-class SafeStringView
-{
-private:
-    std::string_view view_;
-
-    void validateBounds(size_t pos, size_t len) const
-    {
-        if (UNLIKELY(pos > view_.size() || pos + len > view_.size()))
-        {
-            throw std::out_of_range("SafeStringView access out of bounds");
-        }
-    }
-
-public:
-    SafeStringView() noexcept = default;
-
-    explicit SafeStringView(std::string_view sv) noexcept : view_(sv) {}
-
-    explicit SafeStringView(const std::string &s) noexcept : view_(s) {}
-
-    SafeStringView(const char *data, size_t len) noexcept : view_(data, len) {}
-
-    [[nodiscard]] char at(size_t pos) const
-    {
-        validateBounds(pos, 1);
-        return view_[pos];
-    }
-
-    [[nodiscard]] char operator[](size_t pos) const noexcept
-    {
-        SAFE_ASSERT(pos < view_.size(), "SafeStringView index bounds");
-        return view_[pos];
-    }
-
-    [[nodiscard]] size_t size() const noexcept { return view_.size(); }
-    [[nodiscard]] size_t length() const noexcept { return view_.length(); }
-    [[nodiscard]] bool empty() const noexcept { return view_.empty(); }
-    [[nodiscard]] const char *data() const noexcept { return view_.data(); }
-
-    [[nodiscard]] SafeStringView substr(size_t pos, size_t len = std::string_view::npos) const
-    {
-        if (pos > view_.size())
-            throw std::out_of_range("SafeStringView::substr position out of bounds");
-        return SafeStringView(view_.substr(pos, len));
-    }
-
-    [[nodiscard]] std::string_view view() const noexcept { return view_; }
-    [[nodiscard]] std::string toString() const { return std::string(view_); }
-};
-
-// ============================================================================
 // LOCAL PART VALIDATOR (Single Responsibility Principle)
 // ============================================================================
 
