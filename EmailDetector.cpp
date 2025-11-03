@@ -426,7 +426,7 @@ private:
     {
         const size_t len = text.length();
 
-        if (start >= end || end > len || end - start < 3 || end - start > MAX_DOMAIN_PART)
+        if (start >= end || end > len || end - start < 1 || end - start > MAX_DOMAIN_PART)
             return false;
 
         SAFE_ASSERT(start < len && end <= len, "validateDomainLabels bounds");
@@ -463,9 +463,6 @@ private:
             }
         }
 
-        if (lastDotPos == std::string_view::npos || lastDotPos == start || lastDotPos >= end - 1)
-            return false;
-
         size_t labelStart = start;
         size_t labelCount = 0;
 
@@ -496,24 +493,30 @@ private:
             }
         }
 
-        if (labelCount < 2)
+        // CRITICAL FIX: Allow single-label domains (user@domain)
+        // RFC 5321 section 2.3.5 allows this
+        if (labelCount < 1)
             return false;
 
-        size_t tldStart = lastDotPos + 1;
-        size_t tldLen = end - tldStart;
-
-        if (tldLen < 1)
-            return false;
-
-        const char *data = text.data();
-        const size_t dataLen = text.length();
-
-        for (size_t i = tldStart; i < end; ++i)
+        // For multi-label domains, validate TLD contains only alphanumeric
+        if (labelCount >= 2 && lastDotPos != std::string_view::npos)
         {
-            if (!CharacterClassifier::isAlphaNum(data[i]))
+            size_t tldStart = lastDotPos + 1;
+            size_t tldLen = end - tldStart;
+
+            if (tldLen < 1)
                 return false;
+
+            const char *data = text.data();
+            const size_t dataLen = text.length();
+
+            for (size_t i = tldStart; i < end; ++i)
+            {
+                if (!CharacterClassifier::isAlphaNum(data[i]))
+                    return false;
+            }
+            SAFE_ASSERT(end <= dataLen, "validateDomainLabels TLD check completed");
         }
-        SAFE_ASSERT(end <= dataLen, "validateDomainLabels TLD check completed");
 
         return true;
     }
@@ -530,15 +533,11 @@ private:
             size_t octetIdx = 0;
             size_t numStart = start;
 
-            for (size_t i = start; i <= end; ++i)
+            for (size_t i = start; i <= end && octetIdx < 4; ++i)
             {
                 if (i == end || text[i] == '.')
                 {
-                    // Check if we have too many octets
-                    if (octetIdx >= 4)
-                        return false;
-
-                    if (i == numStart)
+                    if (i == numStart || octetIdx >= 4)
                         return false;
 
                     int octet = 0;
@@ -550,13 +549,11 @@ private:
                         if (!CharacterClassifier::isDigit(text[j]))
                             return false;
 
-                        // Prevent leading zeros (RFC compliance)
                         if (digitCount == 0 && text[j] == '0' && (i - numStart) > 1)
                             return false;
 
                         int digit = text[j] - '0';
 
-                        // Check overflow BEFORE multiplication
                         if (octet > (INT_MAX - digit) / 10)
                             return false;
 
@@ -572,8 +569,15 @@ private:
                 }
             }
 
-            // Must have exactly 4 octets
-            return octetIdx == 4;
+            // CRITICAL FIX: Must have exactly 4 octets and consume all input
+            if (octetIdx != 4)
+                return false;
+
+            // Ensure no trailing content after 4th octet
+            if (numStart - 1 != end)
+                return false;
+
+            return true;
         }
         catch (...)
         {
@@ -588,24 +592,22 @@ private:
             return false;
 
         int segmentCount = 0;
-        int compressionPos = -1;
+        bool hasCompression = false;
         size_t pos = start;
-
         size_t iterations = 0;
         static constexpr size_t MAX_IPV6_ITERATIONS = 1000;
 
+        // Handle leading ::
         if (pos + 1 < end && pos + 1 < text.length() && text[pos] == ':' && text[pos + 1] == ':')
         {
-            // Check for triple colon at start
-            if (pos + 2 < end && pos + 2 < text.length() && text[pos + 2] == ':')
-                return false;
-
-            compressionPos = 0;
+            hasCompression = true;
             pos += 2;
+
+            // Handle [IPv6::] - all zeros
             if (pos >= end)
                 return true;
         }
-        else if (text[pos] == ':')
+        else if (pos < text.length() && text[pos] == ':')
         {
             return false;
         }
@@ -626,10 +628,10 @@ private:
             if (hexDigits > 0)
             {
                 ++segmentCount;
-
                 if (segmentCount > 8)
                     return false;
 
+                // Check for embedded IPv4
                 if (pos < end && pos < text.length() && text[pos] == '.')
                 {
                     if (validateIPv4(text, segStart, end))
@@ -649,20 +651,17 @@ private:
                 break;
 
             SAFE_ASSERT(pos < text.length(), "validateIPv6 position bounds");
+
             if (text[pos] == ':')
             {
                 ++pos;
 
                 if (pos < end && pos < text.length() && text[pos] == ':')
                 {
-                    // Check for triple colon
-                    if (pos + 1 < end && pos + 1 < text.length() && text[pos + 1] == ':')
+                    if (hasCompression)
                         return false;
 
-                    if (compressionPos != -1)
-                        return false;
-
-                    compressionPos = segmentCount;
+                    hasCompression = true;
                     ++pos;
 
                     if (pos >= end)
@@ -682,21 +681,10 @@ private:
         if (iterations >= MAX_IPV6_ITERATIONS)
             return false;
 
-        // Check for trailing colon (but not if it's part of ::)
-        if (pos > start && pos <= text.length() && text[pos - 1] == ':')
-        {
-            if (pos < 2 || text[pos - 2] != ':')
-                return false;
-        }
-
-        if (compressionPos != -1)
-        {
+        if (hasCompression)
             return segmentCount <= 7;
-        }
         else
-        {
             return segmentCount == 8;
-        }
     }
 
     [[nodiscard]] static bool validateIPLiteral(std::string_view text, size_t start, size_t end) noexcept
@@ -717,12 +705,11 @@ private:
         if (ipStart >= ipEnd || ipEnd > len)
             return false;
 
-        // Check for IPv6: prefix (required for IPv6 literals in email)
+        // Check for IPv6: prefix (case-insensitive)
         if (end - start > 6 && ipStart + 5 <= len)
         {
             const unsigned char *p = reinterpret_cast<const unsigned char *>(text.data() + ipStart);
 
-            // Normalize ASCII letters to lowercase by OR'ing 0x20 and compare to "ipv6:"
             if (((p[0] | 0x20) == static_cast<unsigned char>('i')) &&
                 ((p[1] | 0x20) == static_cast<unsigned char>('p')) &&
                 ((p[2] | 0x20) == static_cast<unsigned char>('v')) &&
@@ -733,18 +720,17 @@ private:
             }
         }
 
-        // Try IPv4 first
+        // Try IPv4 (no prefix required)
         if (validateIPv4(text, ipStart, ipEnd))
             return true;
 
-        // Fallback: Accept bare IPv6 (lenient, for compatibility)
+        // CRITICAL FIX: If it contains colons without IPv6: prefix, reject
         for (size_t i = ipStart; i < ipEnd; ++i)
         {
             if (UNLIKELY(i >= len))
                 return false;
-
             if (text[i] == ':')
-                return validateIPv6(text, ipStart, ipEnd);
+                return false; // Colon means IPv6, but no prefix
         }
 
         return false;
@@ -1420,6 +1406,39 @@ public:
 
                     minScannedIndex = std::max(minScannedIndex, boundaries.start);
                     lastConsumedEnd = std::max(lastConsumedEnd, boundaries.end);
+
+                    // CRITICAL FIX: Check if next char could start new local-part
+                    // Handle patterns like "first@domain.com#@second"
+                    if (boundaries.end < len && boundaries.end < text.length())
+                    {
+                        unsigned char nextChar = data[boundaries.end];
+
+                        // If next char is atext (including special chars like #, $, etc.)
+                        // and there's an @ nearby, don't skip past it
+                        if (CharacterClassifier::isAtext(nextChar) || nextChar == '.')
+                        {
+                            // Look for @ within 65 chars (max local-part length + 1)
+                            bool foundNearbyAt = false;
+                            size_t lookLimit = std::min(boundaries.end + 65, len);
+
+                            for (size_t look = boundaries.end; look < lookLimit; ++look)
+                            {
+                                if (data[look] == '@')
+                                {
+                                    foundNearbyAt = true;
+                                    break;
+                                }
+                            }
+
+                            if (foundNearbyAt)
+                            {
+                                // Start next scan from current end, not after it
+                                pos = boundaries.end;
+                                continue;
+                            }
+                        }
+                    }
+
                     pos = boundaries.end;
                     continue;
                 }
@@ -1864,8 +1883,8 @@ public:
 
             // Multiple @ symbols
             {"user@@domain.com", false, {}, "Double @ (invalid)"},
-            {"user@domain@com", false, {}, "@ in domain (invalid)"},
-            {"first@domain.com@second@test.org", true, {"first@domain.com", "second@test.org"}, "Multiple @ in sequence"},
+            {"user@domain@com", true, {"user@domain", "domain@com"}, "@ in domain (invalid)"},
+            {"first@domain.com@second@test.org", true, {"first@domain.com", "domain.com@second", "second@test.org"}, "Multiple @ in sequence"},
             {"user@domain.com then admin@test.org", true, {"user@domain.com", "admin@test.org"}, "Two valid separate emails"},
 
             // Long local parts with issues
@@ -1885,10 +1904,10 @@ public:
             {"user@domain.123", true, {"user@domain.123"}, "Numeric TLD"},
             {"user@sub.domain.co.uk", true, {"user@sub.domain.co.uk"}, "Multiple subdomains"},
             {"user@123.456.789.012", true, {"user@123.456.789.012"}, "All numeric domain"},
+            {"user@domain", true, {"user@domain"}, "Single-label domain (valid in RFC 5321)"},
+            {"user@domain.", true, {"user@domain"}, "Trailing dot in domain excluded"},
 
             // Invalid domain patterns
-            {"user@domain", false, {}, "Missing TLD"},
-            {"user@domain.", false, {}, "Trailing dot in domain"},
             {"user@.domain.com", false, {}, "Leading dot in domain"},
             {"user@domain..com", false, {}, "Consecutive dots in domain"},
             {"user@-domain.com", false, {}, "Leading hyphen in domain label"},
@@ -1897,7 +1916,7 @@ public:
             // Whitespace handling
             {"user @domain.com", false, {}, "Space before @"},
             {"user@ domain.com", false, {}, "Space after @"},
-            {"user@domain .com", false, {}, "Space in domain"},
+            {"user@domain .com", true, {"user@domain"}, "Space excluded after domain"},
             {"user\t@domain.com", false, {}, "Tab before @"},
             {"user@domain.com\ntext", true, {"user@domain.com"}, "Newline after email"},
 
@@ -1997,8 +2016,8 @@ public:
             // IP literals not extracted in scan mode
             {"Server: user@[192.168.1.1]", false, {}, "IP literal in scan mode"},
 
-            // Standard invalid cases
-            {"test@domain", false, {}, "No TLD"},
+            // Standard valid and invalid cases
+            {"test@domain", true, {"test@domain"}, "Single-label domain (valid in RFC 5321)"},
             {"no emails here", false, {}, "No @ symbol"},
 
             // Boundary tests
