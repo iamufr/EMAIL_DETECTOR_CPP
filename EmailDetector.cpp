@@ -722,9 +722,12 @@ private:
             {
                 size_t addrStart = ipStart + 5;
 
-                if (addrStart < ipEnd && addrStart < len && text[addrStart] == ':')
+                if (addrStart < ipEnd && text[addrStart] == ':')
                 {
-                    addrStart = ipStart + 4;
+                    if (addrStart + 1 >= ipEnd || text[addrStart + 1] != ':')
+                    {
+                        addrStart = ipStart + 4;
+                    }
                 }
 
                 return validateIPv6(text, addrStart, ipEnd);
