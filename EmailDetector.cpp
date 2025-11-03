@@ -720,21 +720,26 @@ private:
                 (p[3] == static_cast<unsigned char>('6')) &&
                 (p[4] == static_cast<unsigned char>(':')))
             {
-                return validateIPv6(text, ipStart + 5, ipEnd);
+                size_t addrStart = ipStart + 5;
+
+                if (addrStart < ipEnd && addrStart < len && text[addrStart] == ':')
+                {
+                    addrStart = ipStart + 4;
+                }
+
+                return validateIPv6(text, addrStart, ipEnd);
             }
         }
 
-        // Try IPv4 (no prefix required)
         if (validateIPv4(text, ipStart, ipEnd))
             return true;
 
-        // CRITICAL FIX: If it contains colons without IPv6: prefix, reject
         for (size_t i = ipStart; i < ipEnd; ++i)
         {
             if (UNLIKELY(i >= len))
                 return false;
             if (text[i] == ':')
-                return false; // Colon means IPv6, but no prefix
+                return false;
         }
 
         return false;
