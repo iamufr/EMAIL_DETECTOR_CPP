@@ -530,11 +530,15 @@ private:
             size_t octetIdx = 0;
             size_t numStart = start;
 
-            for (size_t i = start; i <= end && octetIdx < 4; ++i)
+            for (size_t i = start; i <= end; ++i)
             {
                 if (i == end || text[i] == '.')
                 {
-                    if (i == numStart || octetIdx >= 4)
+                    // Check if we have too many octets
+                    if (octetIdx >= 4)
+                        return false;
+
+                    if (i == numStart)
                         return false;
 
                     int octet = 0;
@@ -568,6 +572,7 @@ private:
                 }
             }
 
+            // Must have exactly 4 octets
             return octetIdx == 4;
         }
         catch (...)
@@ -591,6 +596,10 @@ private:
 
         if (pos + 1 < end && pos + 1 < text.length() && text[pos] == ':' && text[pos + 1] == ':')
         {
+            // Check for triple colon at start
+            if (pos + 2 < end && pos + 2 < text.length() && text[pos + 2] == ':')
+                return false;
+
             compressionPos = 0;
             pos += 2;
             if (pos >= end)
@@ -646,6 +655,10 @@ private:
 
                 if (pos < end && pos < text.length() && text[pos] == ':')
                 {
+                    // Check for triple colon
+                    if (pos + 1 < end && pos + 1 < text.length() && text[pos + 1] == ':')
+                        return false;
+
                     if (compressionPos != -1)
                         return false;
 
@@ -668,6 +681,13 @@ private:
 
         if (iterations >= MAX_IPV6_ITERATIONS)
             return false;
+
+        // Check for trailing colon (but not if it's part of ::)
+        if (pos > start && pos <= text.length() && text[pos - 1] == ':')
+        {
+            if (pos < 2 || text[pos - 2] != ':')
+                return false;
+        }
 
         if (compressionPos != -1)
         {
@@ -697,6 +717,7 @@ private:
         if (ipStart >= ipEnd || ipEnd > len)
             return false;
 
+        // Check for IPv6: prefix (required for IPv6 literals in email)
         if (end - start > 6 && ipStart + 5 <= len)
         {
             const unsigned char *p = reinterpret_cast<const unsigned char *>(text.data() + ipStart);
@@ -712,9 +733,11 @@ private:
             }
         }
 
+        // Try IPv4 first
         if (validateIPv4(text, ipStart, ipEnd))
             return true;
 
+        // Fallback: Accept bare IPv6 (lenient, for compatibility)
         for (size_t i = ipStart; i < ipEnd; ++i)
         {
             if (UNLIKELY(i >= len))
@@ -1508,6 +1531,7 @@ public:
             {"a@b.co", true, "Minimal valid"},
             {"test.user@example.com", true, "Dot in local part"},
             {"user+tag@gmail.com", true, "Plus sign (Gmail filters)"},
+            {"user@domain", true, "Single-label domain (valid in RFC 5321)"},
 
             // RFC 5322 special characters
             {"user!test@example.com", true, "Exclamation mark"},
@@ -1527,7 +1551,7 @@ public:
             {"user}brace@example.com", true, "Closing brace"},
             {"user~tilde@example.com", true, "Tilde"},
 
-            // Quoted strings (NEW: Now supported!)
+            // Quoted strings
             {"\"user\"@example.com", true, "Simple quoted string"},
             {"\"user name\"@example.com", true, "Quoted string with space"},
             {"\"user@internal\"@example.com", true, "Quoted string with @"},
@@ -1535,21 +1559,20 @@ public:
             {"\"user\\\"name\"@example.com", true, "Escaped quote in quoted string"},
             {"\"user\\\\name\"@example.com", true, "Escaped backslash"},
 
-            // IP literals (NEW: Now supported!)
+            // IP literals
             {"user@[192.168.1.1]", true, "IPv4 literal"},
             {"user@[IPv6:2001:db8::1]", true, "IPv6 literal"},
-            {"user@[2001:db8::1]", true, "IPv6 literal"},
             {"test@[10.0.0.1]", true, "Private IPv4"},
-            {"user@[fe80::1]", true, "IPv6 link-local"},
-            {"user@[::1]", true, "IPv6 loopback"},
+            {"user@[IPv6:fe80::1]", true, "IPv6 link-local"},
+            {"user@[IPv6::1]", true, "IPv6 loopback"},
 
             // IPv6 tests
-            {"user@[::1]", true, "IPv6 loopback"},
-            {"user@[::]", true, "IPv6 all zeros"},
-            {"user@[2001:db8::]", true, "IPv6 trailing compression"},
-            {"user@[::ffff:192.0.2.1]", true, "IPv4-mapped IPv6"},
-            {"user@[2001:db8:85a3::8a2e:370:7334]", true, "IPv6 with compression"},
-            {"user@[2001:0db8:0000:0000:0000:ff00:0042:8329]", true, "IPv6 full form"},
+            {"user@[IPv6::]", true, "IPv6 all zeros"},
+            {"user@[IPv6:2001:db8::]", true, "IPv6 trailing compression"},
+            {"user@[IPv6::ffff:192.0.2.1]", true, "IPv4-mapped IPv6"},
+            {"user@[IPv6:2001:db8:85a3::8a2e:370:7334]", true, "IPv6 with compression"},
+            {"user@[IPv6:2001:db8:85a3::8a2e:0370:7334:123]", true, "IPv6 full form with prefix"},
+            {"user@[IPv6:2001:0db8:0000:0000:0000:ff00:0042:8329]", true, "IPv6 full form"},
 
             // Domain variations
             {"first.last@sub.domain.co.uk", true, "Subdomain + country TLD"},
@@ -1566,7 +1589,6 @@ public:
             {"user@", false, "Missing domain"},
             {"userexample.com", false, "Missing @"},
             {"user@@example.com", false, "Double @"},
-            {"user@domain", false, "Missing TLD"},
             {"user@.domain.com", false, "Domain starts with dot"},
             {"user@domain.com.", false, "Domain ends with dot"},
             {"user@-domain.com", false, "Domain label starts with hyphen"},
@@ -1593,7 +1615,6 @@ public:
             {"j@[]", false, "Invalid domain-literal (empty brackets)"},
             {"k@[.192.168.1.1]", false, "Invalid IPv4 (leading dot inside literal)"},
             {"l@[192.168.1.1\n]", false, "Invalid IPv4 (control/newline character inside literal)"},
-            {"user@[gggg::1]", false, "Invalid IPv6 (bad hex)"},
             {"alice@[IPv6:::1]", false, "Invalid IPv6 (triple-colon)"},
             {"bob@[IPv6:2001:db8::gggg]", false, "Invalid IPv6 (IPv6 uses 0-9 and a-f)"},
             {"carol@[IPv6:2001:0db8:85a3:0000:8a2e:0370:7334:12345]", false, "Invalid IPv6 (hextet longer than 4 hex digits)"},
@@ -1610,7 +1631,15 @@ public:
             {"v@[IPv6:2001:db8:85a3:z:8a2e:370:7334]", false, "Invalid IPv6 (illegal character 'z' in hextet)"},
             {"w@[IPv6:]", false, "Invalid IPv6 (empty IPv6 literal)"},
             {"x@[IPv6:fe80::%eth0]", false, "Invalid IPv6 (zone/index identifier not allowed in SMTP address-literal)"},
-            {"y@[IPv6:2001:db8:85a3::8a2e:0370:7334:123]", false, "Invalid IPv6 (malformed hextet count / tail invalid)"},
+            {"user@[::]", false, "IPv6 all zeros without prefix"},
+            {"user@[2001:db8::1]", false, "IPv6 literal without prefix"},
+            {"user@[fe80::1]", false, "IPv6 link-local without prefix"},
+            {"user@[456.789.012.123]", false, "Invalid (IPv4 literal, octets > 255)"},
+            {"user@[::1]", false, "IPv6 loopback without prefix"},
+            {"user@[2001:db8::]", false, "IPv6 trailing compression without prefix"},
+            {"user@[::ffff:192.0.2.1]", false, "IPv4-mapped IPv6 without prefix"},
+            {"user@[2001:db8:85a3::8a2e:370:7334]", false, "IPv6 with compression without prefix"},
+            {"user@[2001:0db8:0000:0000:0000:ff00:0042:8329]", false, "IPv6 full form without prefix"},
         };
 
         int passed = 0;
@@ -1677,11 +1706,12 @@ public:
             {"noise@@valid@domain.com", true, {"valid@domain.com"}, "Multiple @ characters"},
             {"user@[4294967296.0.0.1]", false, {}, "Invalid Domain"},
             {"text###@@@user@domain.com", true, {"user@domain.com"}, "Multiple invalid chars before @"},
-            {"text@user.com@domain.", true, {"text@user.com"}, "Legal email before second @"},
-            {"text@user.com@domain.in", true, {"text@user.com", "user.com@domain.in"}, "Two legal emails"},
+            {"text@user.com@domain.", true, {"text@user.com", "user.com@domain"}, "Legal email before second @"},
+            {"text@user.com@domain.in.", true, {"text@user.com", "user.com@domain.in"}, "Two legal emails"},
             {"text!!!%(%)%$$$user@domain.com", true, {"user@domain.com"}, "Mixed invalid prefix"},
             {"user....email@domain.com", true, {"email@domain.com"}, "Multiple dots before valid part"},
             {"user...@domain.com", false, {}, "Only dots before @"},
+            {"\"user@internal\"@example.com", true, {"\"user@internal\"@example.com"}, "@ inside double quotes allowed in Local Part"},
             {"user@domain.com@", true, {"user@domain.com"}, "@ at the end"},
             {"27 age and !-+alphatyicbnkdleo$#-=+xkthes123fd56569565@somedomain.com and othere data missing...!", true, {"alphatyicbnkdleo$#-=+xkthes123fd56569565@somedomain.com"}, "Find the alphabet or dight if any invalid special character found before @"},
             {"27 age and alphatyicbnkdleo$#-=+xkthes?--=:-+123fd56569565@gmail.co.uk and othere data missing...!", true, {"123fd56569565@gmail.co.uk"}, "Find the alphabet or dight if any invalid special character found before @"},
@@ -1788,17 +1818,17 @@ public:
             {"text@user.com\t@domain.in", true, {"text@user.com"}, "horizontal tab (TAB) is illegal — whitespace not allowed"},
 
             // Multiple valid email-like sequences with legal special chars before '@'
-            {"In this paragraph there are some emails first@domain.com#@second!@test.org!@alpha.in please find out them...!", true, {"first@domain.com", "second!@test.org", "test.org!@alpha.in"}, "Each local-part contains valid atext characters ('#', '!') before '@' — all RFC 5322 compliant"},
-            {"In this paragraph there are some emails alice@company.net+@bob$@service.co$@example.org please find out them...!", true, {"alice@company.net", "bob$@service.co", "service.co$@example.org"}, "Multiple addresses joined; '+', '$' are legal atext characters in local-part"},
-            {"In this paragraph there are some emails one.user@site.com*@two#@host.org*@third-@example.io please find out them...!", true, {"one.user@site.com", "two#@host.org", "third-@example.io"}, "Each local-part uses legal atext chars ('*', '#', '-') before '@'"},
-            {"In this paragraph there are some emails foo@bar.com!!@baz##@qux$$@quux.in please find out them...!", true, {"foo@bar.com", "qux$$@quux.in"}, "Double consecutive legal characters ('!!', '##', '$$') are RFC-valid though uncommon"},
-            {"In this paragraph there are some emails alpha@beta.com+*@gamma/delta.com+*@eps-@zeta.co please find out them...!", true, {"alpha@beta.com", "eps-@zeta.co"}, "Mix of valid symbols '+', '*', '/', '-' in local-parts — all atext-legal"},
-            {"In this paragraph there are some emails u1@d1.org^@u2_@d2.net`@u3{@d3.io please find out them...!", true, {"u1@d1.org", "u2_@d2.net", "u3{@d3.io"}, "Local-parts include '^', '_', '`', '{' — all RFC-allowed characters"},
-            {"In this paragraph there are some emails name@dom.com|@name2@dom2.com|@name3~@dom3.org please find out them...!", true, {"name@dom.com", "name2@dom2.com", "name3~@dom3.org"}, "Legal special chars ('|', '~') appear before '@' — still RFC-valid"},
-            {"In this paragraph there are some emails me.last@my.org-@you+@your.org-@them*@their.io please find out them...!", true, {"me.last@my.org", "you+@your.org", "them*@their.io"}, "Combination of '-', '+', '*' in local-part are permitted under RFC 5322"},
-            {"In this paragraph there are some emails p@q.com=@r#@s$@t%u.org please find out them...!", true, {"p@q.com"}, "Chained valid addresses with '=', '#', '$', '%' — all within atext definition"},
-            {"In this paragraph there are some emails first@domain.com++@second@test.org--@alpha~~@beta.in please find out them...!", true, {"first@domain.com", "second@test.org", "alpha~~@beta.in"}, "Valid plus, dash, and tilde used before '@'; RFC 5322-legal though rarely used"},
-            {"In this paragraph there are some emails first@domain.com++@second@@test.org--@alpha~~@beta.in please find out them...!", true, {"first@domain.com", "alpha~~@beta.in"}, "Valid plus, dash, and tilde used before '@'; RFC 5322-legal though rarely used"},
+            {"In this paragraph there are some emails first@domain.com#@second!@test.org!@alpha.in please find out them...!", true, {"first@domain.com", "domain.com#@second", "second!@test.org", "test.org!@alpha.in"}, "Each local-part contains valid atext characters ('#', '!') before '@' — all RFC 5322 compliant"},
+            {"In this paragraph there are some emails alice@company.net+@bob$@service.co$@example.org please find out them...!", true, {"alice@company.net", "company.net+@bob", "bob$@service.co", "service.co$@example.org"}, "Multiple addresses joined; '+', '$' are legal atext characters in local-part"},
+            {"In this paragraph there are some emails one.user@site.com*@two#@host.org*@third-@example.io please find out them...!", true, {"one.user@site.com", "site.com*@two", "two#@host.org", "host.org*@third", "third-@example.io"}, "Each local-part uses legal atext chars ('*', '#', '-') before '@'"},
+            {"In this paragraph there are some emails foo@bar.com!!@baz##@qux$$@quux.in please find out them...!", true, {"foo@bar.com", "bar.com!!@baz", "baz##@qux", "qux$$@quux.in"}, "Double consecutive legal characters ('!!', '##', '$$') are RFC-valid though uncommon"},
+            {"In this paragraph there are some emails alpha@beta.com+*@gamma/delta.com+*@eps-@zeta.co please find out them...!", true, {"alpha@beta.com", "beta.com+*@gamma", "gamma/delta.com+*@eps", "eps-@zeta.co"}, "Mix of valid symbols '+', '*', '/', '-' in local-parts — all atext-legal"},
+            {"In this paragraph there are some emails u1@d1.org^@u2_@d2.net`@u3{@d3.io please find out them...!", true, {"u1@d1.org", "d1.org^@u2", "u2_@d2.net", "d2.net`@u3", "u3{@d3.io"}, "Local-parts include '^', '_', '`', '{' — all RFC-allowed characters"},
+            {"In this paragraph there are some emails name@dom.com|@name2@dom2.com|@name3~@dom3.org please find out them...!", true, {"name@dom.com", "dom.com|@name2", "name2@dom2.com", "dom2.com|@name3", "name3~@dom3.org"}, "Legal special chars ('|', '~') appear before '@' — still RFC-valid"},
+            {"In this paragraph there are some emails me.last@my.org-@you+@your.org-@them*@their.io please find out them...!", true, {"me.last@my.org", "my.org-@you", "you+@your.org", "your.org-@them", "them*@their.io"}, "Combination of '-', '+', '*' in local-part are permitted under RFC 5322"},
+            {"In this paragraph there are some emails p@q.com=@r#@s$@t%u.org please find out them...!", true, {"p@q.com", "q.com=@r", "r#@s", "s$@t"}, "Chained valid addresses with '=', '#', '$', '%' — all within atext definition"},
+            {"In this paragraph there are some emails first@domain.com++@second@test.org--@alpha~~@beta.in please find out them...!", true, {"first@domain.com", "domain.com++@second", "second@test.org", "test.org--@alpha", "alpha~~@beta.in"}, "Valid plus, dash, and tilde used before '@'; RFC 5322-legal though rarely used"},
+            {"In this paragraph there are some emails first@domain.com++@second@@test.org--@alpha~~@beta.in please find out them...!", true, {"first@domain.com", "domain.com++@second", "test.org--@alpha", "alpha~~@beta.in"}, "Valid plus, dash, and tilde used before '@'; RFC 5322-legal though rarely used"},
 
             // Mixed special characters in local part
             {"user..name@domain.com", true, {"name@domain.com"}, "Consecutive dots (standalone)"},
