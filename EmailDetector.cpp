@@ -1280,8 +1280,14 @@ public:
                     continue;
                 }
 
-                if (LocalPartValidator::validate(text, boundaries.start, atPos,
-                                                 LocalPartValidator::ValidationMode::SCAN) &&
+                LocalPartValidator::ValidationMode mode = LocalPartValidator::ValidationMode::SCAN;
+                if (boundaries.start < atPos && boundaries.start < len &&
+                    text[boundaries.start] == '"')
+                {
+                    mode = LocalPartValidator::ValidationMode::EXACT;
+                }
+
+                if (LocalPartValidator::validate(text, boundaries.start, atPos, mode) &&
                     DomainPartValidator::validate(text, atPos + 1, boundaries.end))
                 {
                     minScannedIndex = std::max(minScannedIndex, boundaries.start);
@@ -1391,8 +1397,14 @@ public:
                     continue;
                 }
 
-                if (LocalPartValidator::validate(text, boundaries.start, atPos,
-                                                 LocalPartValidator::ValidationMode::SCAN) &&
+                LocalPartValidator::ValidationMode mode = LocalPartValidator::ValidationMode::SCAN;
+                if (boundaries.start < atPos && boundaries.start < len &&
+                    text[boundaries.start] == '"')
+                {
+                    mode = LocalPartValidator::ValidationMode::EXACT;
+                }
+
+                if (LocalPartValidator::validate(text, boundaries.start, atPos, mode) &&
                     DomainPartValidator::validate(text, atPos + 1, boundaries.end))
                 {
                     if (UNLIKELY(boundaries.start >= text.length() ||
