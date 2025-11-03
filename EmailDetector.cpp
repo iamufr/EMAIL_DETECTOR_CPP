@@ -598,7 +598,7 @@ private:
         static constexpr size_t MAX_IPV6_ITERATIONS = 1000;
 
         // Handle leading ::
-        if (pos + 1 < end && pos + 1 < text.length() && text[pos] == ':' && text[pos + 1] == ':')
+        if (pos + 1 <= end && pos + 1 <= text.length() && text[pos] == ':' && text[pos + 1] == ':')
         {
             hasCompression = true;
             pos += 2;
@@ -668,6 +668,10 @@ private:
                         break;
                 }
                 else if (hexDigits == 0)
+                {
+                    return false;
+                }
+                else if (pos >= end)
                 {
                     return false;
                 }
@@ -1592,6 +1596,7 @@ public:
             {"user@[IPv6:2001:db8:85a3::8a2e:370:7334]", true, "IPv6 with compression"},
             {"user@[IPv6:2001:db8:85a3::8a2e:0370:7334:123]", true, "IPv6 full form with prefix"},
             {"user@[IPv6:2001:0db8:0000:0000:0000:ff00:0042:8329]", true, "IPv6 full form"},
+            {"alice@[IPv6:::1]", true, "IPv6 loopback with prefix (appears as ::: but is valid)"},
 
             // Domain variations
             {"first.last@sub.domain.co.uk", true, "Subdomain + country TLD"},
@@ -1634,7 +1639,7 @@ public:
             {"j@[]", false, "Invalid domain-literal (empty brackets)"},
             {"k@[.192.168.1.1]", false, "Invalid IPv4 (leading dot inside literal)"},
             {"l@[192.168.1.1\n]", false, "Invalid IPv4 (control/newline character inside literal)"},
-            {"alice@[IPv6:::1]", false, "Invalid IPv6 (triple-colon)"},
+            {"alice@[IPv6::::1]", false, "Invalid IPv6 (actual triple-colon in address)"},
             {"bob@[IPv6:2001:db8::gggg]", false, "Invalid IPv6 (IPv6 uses 0-9 and a-f)"},
             {"carol@[IPv6:2001:0db8:85a3:0000:8a2e:0370:7334:12345]", false, "Invalid IPv6 (hextet longer than 4 hex digits)"},
             {"dave@[2001:db8::1]", false, "Invalid IPv6 (Missing the ' IPv6 : ' prefix inside the brackets)"},
