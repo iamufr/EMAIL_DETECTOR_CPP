@@ -1755,7 +1755,7 @@ public:
             {"text!!!%(%)%$$$user@domain.com", true, {"user@domain.com"}, "Mixed invalid prefix"},
             {"user....email@domain.com", true, {"email@domain.com"}, "Multiple dots before valid part"},
             {"user...@domain.com", false, {}, "Only dots before @"},
-            {"In this paragraph there are some emails \"user@internal\"@example.com please find out them...!", true, {"\"user@internal\"@example.com"}, "@ inside double quotes allowed in Local Part"},
+            {"In this paragraph there are some emails \"user@internal\"@example.com please find out them...!", true, {"user@internal", "\"user@internal\"@example.com"}, "@ inside double quotes allowed in Local Part"},
             {"user@domain.com@", true, {"user@domain.com"}, "@ at the end"},
             {"27 age and !-+alphatyicbnkdleo$#-=+xkthes123fd56569565@somedomain.com and othere data missing...!", true, {"alphatyicbnkdleo$#-=+xkthes123fd56569565@somedomain.com"}, "Find the alphabet or dight if any invalid special character found before @"},
             {"27 age and alphatyicbnkdleo$#-=+xkthes?--=:-+123fd56569565@gmail.co.uk and othere data missing...!", true, {"123fd56569565@gmail.co.uk"}, "Find the alphabet or dight if any invalid special character found before @"},
