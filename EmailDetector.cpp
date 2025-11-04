@@ -18,9 +18,9 @@
 #include <unordered_set>
 #include <vector>
 
-// ============================================================================
-// SECURITY & SAFETY MACROS
-// ============================================================================
+// ====================================================================================================
+// SECURITY & SAFETY MACROS (COMPILER & PLATFORM DETECTION)
+// ====================================================================================================
 
 #if defined(__GNUC__) || defined(__clang__)
 #define LIKELY(x) __builtin_expect(!!(x), 1)
@@ -38,13 +38,11 @@
 #define FORCE_INLINE inline
 #endif
 
-// FIX: Safe subtraction for size_t to prevent underflow
 [[nodiscard]] constexpr size_t safe_subtract(size_t a, size_t b) noexcept
 {
     return (a > b) ? (a - b) : 0;
 }
 
-// FIX: Safe addition for size_t to prevent overflow
 [[nodiscard]] constexpr bool safe_add(size_t a, size_t b, size_t &result) noexcept
 {
     if (a > SIZE_MAX - b)
@@ -81,14 +79,13 @@
         }                                                            \
     } while (0)
 
-// ============================================================================
-// THREAD-SAFE STATISTICS (FIX: Consistent memory ordering)
-// ============================================================================
+// ====================================================================================================
+// STATISTICS TRACKER
+// ====================================================================================================
 
 class ValidationStats
 {
 private:
-    // FIX: Use seq_cst for consistency across all operations
     mutable std::atomic<uint64_t> validationCount{0};
     mutable std::atomic<uint64_t> scanCount{0};
     mutable std::atomic<uint64_t> extractCount{0};
@@ -172,9 +169,9 @@ public:
     }
 };
 
-// ============================================================================
-// INTERFACES
-// ============================================================================
+// ====================================================================================================
+// INTERFACES (SOLID: Interface Segregation Principle)
+// ====================================================================================================
 
 class IEmailValidator
 {
@@ -190,14 +187,13 @@ public:
     virtual ~IEmailScanner() = default;
     [[nodiscard]] virtual bool contains(std::string_view text) const noexcept = 0;
 
-    // FIX: Return std::string (owned memory) instead of string_view
     [[nodiscard]] virtual std::vector<std::string> extract(std::string_view text) const noexcept = 0;
     [[nodiscard]] virtual const ValidationStats &getStats() const noexcept = 0;
 };
 
-// ============================================================================
-// CHARACTER CLASSIFIER (Thread-safe by design - immutable data)
-// ============================================================================
+// ====================================================================================================
+// CHARACTER CLASSIFICATION (Lookup Tables) (Single Responsibility Principle)
+// ====================================================================================================
 
 class CharacterClassifier
 {
@@ -294,9 +290,9 @@ public:
     }
 };
 
-// ============================================================================
-// LOCAL PART VALIDATOR (FIX: Safe index arithmetic)
-// ============================================================================
+// ====================================================================================================
+// LOCAL PART VALIDATOR (Single Responsibility Principle)
+// ====================================================================================================
 
 class LocalPartValidator
 {
@@ -438,9 +434,9 @@ public:
     }
 };
 
-// ============================================================================
-// DOMAIN PART VALIDATOR (FIX: Overflow protection)
-// ============================================================================
+// ====================================================================================================
+// DOMAIN PART VALIDATOR (Single Responsibility Principle)
+// ====================================================================================================
 
 class DomainPartValidator
 {
@@ -479,7 +475,6 @@ private:
             }
         }
 
-        // FIX: Safe reverse search for last dot
         size_t lastDotPos = SIZE_MAX;
         if (end > start)
         {
@@ -491,7 +486,7 @@ private:
                     break;
                 }
                 if (i == start)
-                    break; // FIX: Prevent underflow
+                    break;
             }
         }
 
@@ -528,7 +523,6 @@ private:
         if (labelCount < 1)
             return false;
 
-        // Validate TLD contains only alphanumeric
         if (labelCount >= 2 && lastDotPos != SIZE_MAX)
         {
             size_t tldStart = lastDotPos + 1;
@@ -577,7 +571,6 @@ private:
 
                         int digit = text[j] - '0';
 
-                        // FIX: Proper overflow check
                         if (octet > (255 - digit) / 10)
                             return false;
 
@@ -618,7 +611,6 @@ private:
         size_t iterations = 0;
         static constexpr size_t MAX_IPV6_ITERATIONS = 1000;
 
-        // Handle leading ::
         if ((pos + 1) < end && text[pos] == ':' && text[pos + 1] == ':')
         {
             hasCompression = true;
@@ -650,7 +642,6 @@ private:
                 if (segmentCount > 8)
                     return false;
 
-                // Check for embedded IPv4
                 if (pos < end && text[pos] == '.')
                 {
                     if (validateIPv4(text, segStart, end))
@@ -728,7 +719,6 @@ private:
         if (ipStart >= ipEnd || ipEnd > len)
             return false;
 
-        // Check for IPv6: prefix
         if ((end - start) > 6 && (ipStart + 5) <= len)
         {
             const char *p = text.data() + ipStart;
@@ -783,9 +773,9 @@ public:
     }
 };
 
-// ============================================================================
-// EMAIL VALIDATOR (Thread-safe)
-// ============================================================================
+// ====================================================================================================
+// EMAIL VALIDATOR (Open/Closed Principle - extensible through composition)
+// ====================================================================================================
 
 class EmailValidator : public IEmailValidator
 {
@@ -883,9 +873,9 @@ public:
     }
 };
 
-// ============================================================================
-// EMAIL SCANNER (FIX: Memory-safe with owned strings)
-// ============================================================================
+// ====================================================================================================
+// EMAIL SCANNER WITH HEURISTIC EXTRACTION (Single Responsibility Principle)
+// ====================================================================================================
 
 class EmailScanner : public IEmailScanner
 {
@@ -904,7 +894,6 @@ private:
         size_t skipTo;
     };
 
-    // FIX: Safe helper functions
     [[nodiscard]] static FORCE_INLINE size_t findFirstAlnum(const char *data, size_t dataLen,
                                                             size_t pos, size_t limit) noexcept
     {
@@ -974,21 +963,12 @@ private:
             }
         }
 
-        // ========================================================================
-        // QUOTED-STRING LOCAL-PART DETECTION
-        // CRITICAL: Use absoluteMin (not minScannedIndex) to find opening quotes
-        // This allows detection of quoted strings that span previously scanned regions
-        // Example: "user@internal"@example.com
-        //   First scan extracts: user@internal
-        //   Second scan must find opening quote before "user" to extract full quoted email
-        // ========================================================================
         size_t absoluteMin = safe_subtract(atPos, MAX_LEFT_SCAN);
 
         if (atPos > 0 && (data[atPos - 1] == '"' || data[atPos - 1] == '\'' || data[atPos - 1] == '`'))
         {
             unsigned char closingQuote = static_cast<unsigned char>(data[atPos - 1]);
 
-            // Scan backwards from absoluteMin (NOT minScannedIndex) to find matching opening quote
             if (atPos >= 2)
             {
                 for (size_t i = atPos - 2; i >= absoluteMin; --i)
@@ -1038,22 +1018,17 @@ private:
                     }
 
                     if (i == 0 || i == absoluteMin)
-                        break; // FIX: Prevent underflow
+                        break;
                 }
             }
         }
-        // ========================================================================
-        // END QUOTED-STRING DETECTION
-        // ========================================================================
 
         size_t effectiveMin = std::max(minScannedIndex, absoluteMin);
-
         size_t start = atPos;
         bool hitInvalidChar = false;
         size_t invalidCharPos = atPos;
         bool didRecovery = false;
 
-        // FIX: Safe backward scan
         while (start > effectiveMin)
         {
             SAFE_ASSERT(start > 0 && start <= len, "findEmailBoundaries left scan");
@@ -1078,7 +1053,6 @@ private:
             {
                 if (prevChar == '@' && start > effectiveMin + 1)
                 {
-                    // FIX: Safe lookback
                     size_t lookback = safe_subtract(start, 2);
                     size_t validStart = start - 1;
                     bool foundValid = false;
@@ -1096,7 +1070,7 @@ private:
                             if (lookback == lookbackLimit)
                                 break;
                             if (lookback == 0)
-                                break; // FIX: Prevent underflow
+                                break;
                             --lookback;
                             continue;
                         }
@@ -1337,7 +1311,6 @@ public:
 
                 auto boundaries = findEmailBoundaries(text, atPos, minScannedIndex);
 
-                // FIX: Safe overflow check for addition
                 size_t charsScanned = 0;
                 if (!safe_add(atPos - boundaries.start, boundaries.end - atPos, charsScanned))
                 {
@@ -1393,7 +1366,6 @@ public:
         }
     }
 
-    // FIX: Returns owned strings instead of string_views
     [[nodiscard]] std::vector<std::string> extract(std::string_view text) const noexcept override
     {
         stats_.recordExtract();
@@ -1460,7 +1432,6 @@ public:
 
                     auto boundaries = findEmailBoundaries(text, atPos, minScannedIndex);
 
-                    // FIX: Safe overflow check
                     size_t charsScanned = 0;
                     if (!safe_add(atPos - boundaries.start, boundaries.end - atPos, charsScanned))
                     {
@@ -1507,7 +1478,6 @@ public:
                             continue;
                         }
 
-                        // FIX: Create owned string, not string_view
                         std::string email(text.substr(boundaries.start, boundaries.end - boundaries.start));
 
                         auto [it, inserted] = seen.insert(email);
@@ -1580,14 +1550,13 @@ public:
     }
 };
 
-// ============================================================================
-// FACTORY (FIX: Thread-safe singleton with mutex for reset)
-// ============================================================================
+// ====================================================================================================
+// FACTORY (Dependency Inversion Principle)
+// ====================================================================================================
 
 class EmailValidatorFactory
 {
 private:
-    // FIX: Thread-local instances to avoid shared state issues
     static IEmailValidator &getThreadLocalValidator()
     {
         thread_local EmailValidator instance;
@@ -1601,7 +1570,6 @@ private:
     }
 
 public:
-    // Create new independent instances
     [[nodiscard]] static std::unique_ptr<IEmailValidator> createValidator()
     {
         return std::make_unique<EmailValidator>();
@@ -1612,8 +1580,6 @@ public:
         return std::make_unique<EmailScanner>();
     }
 
-    // FIX: Return thread-local instances instead of shared singleton
-    // This prevents race conditions when one thread calls reset()
     [[nodiscard]] static IEmailValidator &getValidator()
     {
         return getThreadLocalValidator();
@@ -1625,9 +1591,9 @@ public:
     }
 };
 
-// ============================================================================
+// ====================================================================================================
 // TEST SUITE
-// ============================================================================
+// ====================================================================================================
 
 class EmailValidatorTest
 {
@@ -2376,9 +2342,9 @@ public:
     }
 };
 
-// ============================================================================
+// ====================================================================================================
 // MAIN
-// ============================================================================
+// ====================================================================================================
 
 int main()
 {
