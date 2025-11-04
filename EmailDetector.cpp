@@ -969,14 +969,77 @@ private:
             }
         }
 
-        size_t start = atPos;
-        bool hitInvalidChar = false;
-        size_t invalidCharPos = atPos;
-        bool didRecovery = false;
+        // Check if character immediately before @ is a closing quote
+        size_t absoluteMin = (atPos > MAX_LEFT_SCAN) ? (atPos - MAX_LEFT_SCAN) : 0;
+
+        if (atPos > 0 && (data[atPos - 1] == '"' || data[atPos - 1] == '\'' || data[atPos - 1] == '`'))
+        {
+            unsigned char closingQuote = data[atPos - 1];
+            
+            for (size_t i = atPos - 2; i >= absoluteMin && i < atPos; --i)
+            {
+                if (data[i] == closingQuote)
+                {
+                    bool validBoundary = (i == 0 || i == absoluteMin);
+
+                    if (!validBoundary && i > 0)
+                    {
+                        unsigned char prevChar = data[i - 1];
+                        validBoundary = CharacterClassifier::isScanBoundary(prevChar) ||
+                                        prevChar == ' ' ||
+                                        prevChar == '=' ||
+                                        prevChar == ':' ||
+                                        prevChar == ',' ||
+                                        prevChar == '<' ||
+                                        prevChar == '(' ||
+                                        prevChar == '[' ||
+                                        prevChar == '\r' ||
+                                        prevChar == '\n' ||
+                                        CharacterClassifier::isInvalidLocalChar(prevChar);
+                    }
+
+                    if (validBoundary)
+                    {
+                        size_t start = i;
+
+                        if (atPos - start < 3)
+                            break;
+
+                        bool rightBoundaryValid = true;
+                        if (end < len)
+                        {
+                            unsigned char nextChar = data[end];
+                            if (!CharacterClassifier::isScanRightBoundary(nextChar) &&
+                                nextChar != '\'' && nextChar != '`' && nextChar != '"' &&
+                                nextChar != '@' && nextChar != '\\' &&
+                                nextChar != ',' && nextChar != ';' && nextChar != '.' &&
+                                nextChar != '!' && nextChar != '?' &&
+                                !CharacterClassifier::isAtext(nextChar))
+                            {
+                                rightBoundaryValid = false;
+                            }
+                        }
+
+                        if (rightBoundaryValid)
+                        {
+                            return {start, end, true, 0};
+                        }
+                    }
+                }
+
+                if (i == 0)
+                    break;
+            }
+        }
 
         size_t effectiveMin = minScannedIndex;
         if (atPos > MAX_LEFT_SCAN)
             effectiveMin = std::max(minScannedIndex, atPos - MAX_LEFT_SCAN);
+
+        size_t start = atPos;
+        bool hitInvalidChar = false;
+        size_t invalidCharPos = atPos;
+        bool didRecovery = false;
 
         while (start > effectiveMin)
         {
@@ -1431,17 +1494,12 @@ public:
                     minScannedIndex = std::max(minScannedIndex, boundaries.start);
                     lastConsumedEnd = std::max(lastConsumedEnd, boundaries.end);
 
-                    // CRITICAL FIX: Check if next char could start new local-part
-                    // Handle patterns like "first@domain.com#@second"
                     if (boundaries.end < len && boundaries.end < text.length())
                     {
                         unsigned char nextChar = data[boundaries.end];
 
-                        // If next char is atext (including special chars like #, $, etc.)
-                        // and there's an @ nearby, don't skip past it
                         if (CharacterClassifier::isAtext(nextChar) || nextChar == '.')
                         {
-                            // Look for @ within 65 chars (max local-part length + 1)
                             bool foundNearbyAt = false;
                             size_t lookLimit = std::min(boundaries.end + 65, len);
 
@@ -1456,7 +1514,6 @@ public:
 
                             if (foundNearbyAt)
                             {
-                                // Start next scan from current end, not after it
                                 pos = boundaries.end;
                                 continue;
                             }
