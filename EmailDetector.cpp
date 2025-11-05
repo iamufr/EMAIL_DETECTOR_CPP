@@ -475,17 +475,18 @@ private:
         }
 
         size_t lastDotPos = SIZE_MAX;
+
         if (end > start)
         {
-            for (size_t i = end - 1; i >= start; --i)
+            for (size_t i = end; i > start;)
             {
+                --i;
+
                 if (text[i] == '.')
                 {
                     lastDotPos = i;
                     break;
                 }
-                if (i == start)
-                    break;
             }
         }
 
@@ -897,6 +898,9 @@ private:
     static constexpr size_t MAX_BACKWARD_SCAN_CHARS = 200;
     static constexpr size_t MAX_QUOTE_SCAN = 100;
     static constexpr size_t MAX_MEMORY_BUDGET = 5 * 1024 * 1024; // 5MB
+    static constexpr size_t MAX_INITIAL_RESERVE = 100;
+    static constexpr size_t MAX_AT_SYMBOLS = 5000;
+    static constexpr size_t MAX_SEEN_SET_SIZE = 5000;
 
     mutable ValidationStats stats_;
 
@@ -974,10 +978,18 @@ private:
             return {atPos, atPos, false, atPos + 1};
         }
 
+        static constexpr size_t MAX_DOMAIN_SCAN = 253;
+        size_t domain_chars = 0;
+
         while (end < len && CharacterClassifier::isDomainChar(static_cast<unsigned char>(data[end])))
         {
             SAFE_ASSERT(end < len, "findEmailBoundaries domain scan bounds");
             ++end;
+
+            if (++domain_chars > MAX_DOMAIN_SCAN)
+            {
+                return {atPos, atPos, false, atPos + 1};
+            }
         }
 
         while (end > atPos + 1 && data[end - 1] == '.')
@@ -1004,7 +1016,7 @@ private:
 
             if (atPos >= 2)
             {
-                for (size_t i = atPos - 2; i >= absoluteMin && i < atPos; --i)
+                for (size_t i = atPos - 1; i > absoluteMin && i > 0; --i)
                 {
                     ++quotesSeen;
 
@@ -1054,9 +1066,6 @@ private:
                             }
                         }
                     }
-
-                    if (i == 0 || i == absoluteMin)
-                        break;
                 }
             }
         }
@@ -1068,12 +1077,8 @@ private:
         bool didRecovery = false;
         size_t charsScanned = 0;
 
-        while (start > effectiveMin && charsScanned < MAX_BACKWARD_SCAN_CHARS)
+        while (start > effectiveMin && start > 0 && charsScanned < MAX_BACKWARD_SCAN_CHARS)
         {
-            if (start == 0)
-                break;
-
-            SAFE_ASSERT(start > 0 && start <= len, "findEmailBoundaries left scan");
             unsigned char prevChar = static_cast<unsigned char>(data[start - 1]);
 
             if (prevChar == '@')
@@ -1431,7 +1436,6 @@ public:
     [[nodiscard]] std::vector<std::string> extract(std::string_view text) const noexcept override
     {
         stats_.recordExtract();
-
         std::vector<std::string> emails;
 
         try
@@ -1450,178 +1454,210 @@ public:
                 return emails;
             }
 
-            emails.reserve(std::min<size_t>(10, len / 30));
+            size_t initial_reserve = std::min({MAX_INITIAL_RESERVE,
+                                               len / 30,
+                                               static_cast<size_t>(10)});
 
-            size_t expected_unique = std::min<size_t>(len / 30, MAX_EMAILS_EXTRACT);
+            emails.reserve(initial_reserve);
+
+            std::unordered_set<std::string> seen;
+            size_t expected_unique = std::min({len / 30,
+                                               MAX_EMAILS_EXTRACT,
+                                               MAX_SEEN_SET_SIZE});
+
             size_t reserve_size = 0;
             if (safe_add(expected_unique * 13 / 10, 1, reserve_size))
             {
-                std::unordered_set<std::string> seen;
+                reserve_size = std::min(reserve_size, MAX_SEEN_SET_SIZE);
                 seen.reserve(reserve_size);
+            }
 
-                const char *data = text.data();
-                size_t pos = 0;
-                size_t minScannedIndex = 0;
-                size_t lastConsumedEnd = 0;
-                size_t extractedCount = 0;
+            const char *data = text.data();
+            size_t pos = 0;
+            size_t minScannedIndex = 0;
+            size_t lastConsumedEnd = 0;
+            size_t extractedCount = 0;
+            size_t atSymbolsProcessed = 0;
 
-                static constexpr size_t MAX_SCAN_ITERATIONS = 100'000;
-                size_t iterations = 0;
-                static constexpr size_t MAX_TOTAL_CHARS_SCANNED = 1'000'000;
-                size_t totalCharsScanned = 0;
-                size_t estimatedMemory = 0;
+            static constexpr size_t MAX_SCAN_ITERATIONS = 100'000;
+            size_t iterations = 0;
+            static constexpr size_t MAX_TOTAL_CHARS_SCANNED = 1'000'000;
+            size_t totalCharsScanned = 0;
+            size_t estimatedMemory = 0;
 
-                while (pos < len && iterations++ < MAX_SCAN_ITERATIONS)
+            while (pos < len && iterations++ < MAX_SCAN_ITERATIONS)
+            {
+                if (UNLIKELY(extractedCount >= MAX_EMAILS_EXTRACT))
+                    break;
+
+                if (UNLIKELY(atSymbolsProcessed >= MAX_AT_SYMBOLS))
                 {
-                    if (UNLIKELY(extractedCount >= MAX_EMAILS_EXTRACT))
-                        break;
+                    stats_.recordError();
+                    break;
+                }
 
-                    auto atPosOpt = safe_memchr_index(data, pos, len, '@');
-                    if (!atPosOpt)
-                        break;
+                auto atPosOpt = safe_memchr_index(data, pos, len, '@');
+                if (!atPosOpt)
+                    break;
 
-                    size_t atPos = *atPosOpt;
+                size_t atPos = *atPosOpt;
+                ++atSymbolsProcessed;
 
-                    if (UNLIKELY(atPos < 1 || atPos >= len - 3))
+                if (UNLIKELY(atPos < 1 || atPos >= len - 3))
+                {
+                    pos = atPos + 1;
+                    continue;
+                }
+
+                if (atPos < lastConsumedEnd)
+                {
+                    pos = atPos + 1;
+                    continue;
+                }
+
+                auto boundaries = findEmailBoundaries(text, atPos, minScannedIndex);
+
+                size_t charsScanned = 0;
+                size_t temp = 0;
+
+                if (!safe_add(safe_subtract(atPos, boundaries.start),
+                              safe_subtract(boundaries.end, atPos), temp))
+                {
+                    stats_.recordError();
+                    break;
+                }
+
+                charsScanned = temp;
+
+                if (charsScanned > MAX_BACKTRACK_PER_AT)
+                {
+                    pos = atPos + 1;
+                    continue;
+                }
+
+                if (!safe_add(totalCharsScanned, charsScanned, totalCharsScanned))
+                {
+                    stats_.recordError();
+                    break;
+                }
+
+                if (totalCharsScanned > MAX_TOTAL_CHARS_SCANNED)
+                {
+                    stats_.recordError();
+                    break;
+                }
+
+                if (!boundaries.validBoundaries)
+                {
+                    if (boundaries.skipTo > 0)
+                        pos = boundaries.skipTo;
+                    else
+                        pos = atPos + 1;
+                    continue;
+                }
+
+                LocalPartValidator::ValidationMode mode = LocalPartValidator::ValidationMode::SCAN;
+                if (boundaries.start < atPos && boundaries.start < len &&
+                    text[boundaries.start] == '"')
+                {
+                    mode = LocalPartValidator::ValidationMode::EXACT;
+                }
+
+                if (LocalPartValidator::validate(text, boundaries.start, atPos, mode) &&
+                    DomainPartValidator::validate(text, atPos + 1, boundaries.end))
+                {
+                    if (UNLIKELY(boundaries.start >= text.length() ||
+                                 boundaries.end > text.length() ||
+                                 boundaries.start >= boundaries.end))
                     {
                         pos = atPos + 1;
                         continue;
                     }
 
-                    if (atPos < lastConsumedEnd)
-                    {
-                        pos = atPos + 1;
-                        continue;
-                    }
+                    std::string email(text.substr(boundaries.start, boundaries.end - boundaries.start));
+                    size_t emailMemory = email.length() + sizeof(std::string) + 32;
+                    size_t newMemory = 0;
 
-                    auto boundaries = findEmailBoundaries(text, atPos, minScannedIndex);
-
-                    size_t charsScanned = 0;
-                    size_t temp = 0;
-
-                    if (!safe_add(safe_subtract(atPos, boundaries.start),
-                                  safe_subtract(boundaries.end, atPos), temp))
+                    if (!safe_add(estimatedMemory, emailMemory, newMemory) ||
+                        newMemory > MAX_MEMORY_BUDGET)
                     {
                         stats_.recordError();
                         break;
                     }
 
-                    charsScanned = temp;
-
-                    if (charsScanned > MAX_BACKTRACK_PER_AT)
-                    {
-                        pos = atPos + 1;
-                        continue;
-                    }
-
-                    if (!safe_add(totalCharsScanned, charsScanned, totalCharsScanned))
+                    if (seen.size() >= MAX_SEEN_SET_SIZE)
                     {
                         stats_.recordError();
                         break;
                     }
 
-                    if (totalCharsScanned > MAX_TOTAL_CHARS_SCANNED)
+                    if (emails.size() >= emails.capacity())
                     {
-                        stats_.recordError();
-                        break;
-                    }
+                        size_t new_capacity = emails.size() + 1;
+                        size_t additional_memory = new_capacity * sizeof(std::string);
 
-                    if (!boundaries.validBoundaries)
-                    {
-                        if (boundaries.skipTo > 0)
-                            pos = boundaries.skipTo;
-                        else
-                            pos = atPos + 1;
-                        continue;
-                    }
-
-                    LocalPartValidator::ValidationMode mode = LocalPartValidator::ValidationMode::SCAN;
-                    if (boundaries.start < atPos && boundaries.start < len &&
-                        text[boundaries.start] == '"')
-                    {
-                        mode = LocalPartValidator::ValidationMode::EXACT;
-                    }
-
-                    if (LocalPartValidator::validate(text, boundaries.start, atPos, mode) &&
-                        DomainPartValidator::validate(text, atPos + 1, boundaries.end))
-                    {
-                        if (UNLIKELY(boundaries.start >= text.length() ||
-                                     boundaries.end > text.length() ||
-                                     boundaries.start >= boundaries.end))
-                        {
-                            pos = atPos + 1;
-                            continue;
-                        }
-
-                        std::string email(text.substr(boundaries.start, boundaries.end - boundaries.start));
-                        size_t emailMemory = email.length() + sizeof(std::string) + 32;
-                        size_t newMemory = 0;
-
-                        if (!safe_add(estimatedMemory, emailMemory, newMemory) ||
+                        if (!safe_add(newMemory, additional_memory, newMemory) ||
                             newMemory > MAX_MEMORY_BUDGET)
                         {
                             stats_.recordError();
                             break;
                         }
 
-                        if (emails.capacity() == emails.size())
-                        {
-                            emails.reserve(emails.size() + 1);
-                        }
-
-                        auto [it, inserted] = seen.insert(email);
-
-                        if (inserted)
-                        {
-                            try
-                            {
-                                emails.push_back(std::move(email));
-                                estimatedMemory = newMemory;
-                                ++extractedCount;
-                            }
-                            catch (...)
-                            {
-                                seen.erase(it);
-                                stats_.recordError();
-                                break;
-                            }
-                        }
-
-                        minScannedIndex = std::max(minScannedIndex, boundaries.start);
-                        lastConsumedEnd = std::max(lastConsumedEnd, boundaries.end);
-
-                        if (boundaries.end < len)
-                        {
-                            unsigned char nextChar = static_cast<unsigned char>(data[boundaries.end]);
-
-                            if (CharacterClassifier::isAtext(nextChar) || nextChar == '.')
-                            {
-                                bool foundNearbyAt = false;
-                                size_t lookLimit = std::min(boundaries.end + 65, len);
-
-                                for (size_t look = boundaries.end; look < lookLimit; ++look)
-                                {
-                                    if (data[look] == '@')
-                                    {
-                                        foundNearbyAt = true;
-                                        break;
-                                    }
-                                }
-
-                                if (foundNearbyAt)
-                                {
-                                    pos = boundaries.end;
-                                    continue;
-                                }
-                            }
-                        }
-
-                        pos = boundaries.end;
-                        continue;
+                        emails.reserve(new_capacity);
                     }
 
-                    pos = atPos + 1;
+                    auto [it, inserted] = seen.insert(email);
+
+                    if (inserted)
+                    {
+                        try
+                        {
+                            emails.push_back(std::move(email));
+                            estimatedMemory = newMemory;
+                            ++extractedCount;
+                        }
+                        catch (...)
+                        {
+                            seen.erase(it);
+                            stats_.recordError();
+                            break;
+                        }
+                    }
+
+                    minScannedIndex = std::max(minScannedIndex, boundaries.start);
+                    lastConsumedEnd = std::max(lastConsumedEnd, boundaries.end);
+
+                    if (boundaries.end < len)
+                    {
+                        unsigned char nextChar = static_cast<unsigned char>(data[boundaries.end]);
+
+                        if (CharacterClassifier::isAtext(nextChar) || nextChar == '.')
+                        {
+                            bool foundNearbyAt = false;
+                            size_t lookLimit = std::min(boundaries.end + 65, len);
+
+                            for (size_t look = boundaries.end; look < lookLimit; ++look)
+                            {
+                                if (data[look] == '@')
+                                {
+                                    foundNearbyAt = true;
+                                    break;
+                                }
+                            }
+
+                            if (foundNearbyAt)
+                            {
+                                pos = boundaries.end;
+                                continue;
+                            }
+                        }
+                    }
+
+                    pos = boundaries.end;
+                    continue;
                 }
+
+                pos = atPos + 1;
             }
         }
         catch (const std::bad_alloc &)
@@ -2280,6 +2316,42 @@ public:
                   << std::endl;
     }
 
+    static void runAdversarialTests()
+    {
+        std::cout << "\n=== ADVERSARIAL INPUT TESTS ===\n";
+
+        auto scanner = EmailValidatorFactory::createScanner();
+
+        // Test 1: Many @ symbols
+        std::string many_ats(10000, '@');
+        auto start = std::chrono::high_resolution_clock::now();
+        auto result = scanner->extract(many_ats);
+        auto end = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+
+        std::cout << "Many @s test: " << duration.count() << "ms, found: "
+                  << result.size() << " emails\n";
+        assert(duration.count() < 1000); // Should complete in < 1 second
+
+        // Test 2: Very long domain
+        std::string long_domain = "user@" + std::string(500, 'a') + ".com";
+        result = scanner->extract(long_domain);
+        std::cout << "Long domain test: found " << result.size() << " emails\n";
+        assert(result.empty()); // Should reject
+
+        // Test 3: Memory bomb
+        std::string memory_bomb;
+        for (int i = 0; i < 20000; ++i)
+        {
+            memory_bomb += "user" + std::to_string(i) + "@domain" + std::to_string(i) + ".com ";
+        }
+        result = scanner->extract(memory_bomb);
+        std::cout << "Memory bomb test: found " << result.size() << " emails (capped)\n";
+        assert(result.size() <= 5000); // Should be capped
+
+        std::cout << "✓ All adversarial tests passed\n";
+    }
+
     static void runPerformanceBenchmark()
     {
         std::cout << "\n"
@@ -2454,6 +2526,10 @@ int main()
                   << std::endl;
 
         EmailValidatorTest::runTextScanningTests();
+        std::cout << std::string(100, '=') << "\n"
+                  << std::endl;
+
+        EmailValidatorTest::runAdversarialTests();
         std::cout << std::string(100, '=') << "\n"
                   << std::endl;
 
