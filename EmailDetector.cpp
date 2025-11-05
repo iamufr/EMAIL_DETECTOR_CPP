@@ -1795,7 +1795,7 @@ public:
             {"loopback@[127.0.0.1]", true, "IPv4 Boundary IP Address"},
             {R"("spaces are allowed"@[10.1.2.3])", true, "IPv4 with space in local-part inside quotes"},
             {"test@[10.0.0.1]", true, "Private IPv4"},
-            
+
             // IPv6 tests
             {"user@[IPv6::]", true, "IPv6 all zeros"},
             {"user@[IPv6::1]", true, "IPv6 loopback"},
@@ -2364,7 +2364,7 @@ public:
     {
         std::cout << "\n"
                   << std::string(100, '=') << "\n";
-        std::cout << "=== PERFORMANCE BENCHMARK ===\n";
+        std::cout << "=== COMPREHENSIVE PERFORMANCE BENCHMARK ===\n";
         std::cout << std::string(100, '=') << "\n";
 
         EmailValidator validator;
@@ -2373,7 +2373,7 @@ public:
         std::vector<std::string> testCases = {
             "Simple email: user@example.com in text",
             "Multiple emails: first@domain.com and second@another.org",
-            "user..double@domain.com", // Invalid
+            "user..double@domain.com",
             "Complex: john.doe+filter@sub.domain.co.uk mixed with text",
             "No emails in this text at all",
             "Edge case: a@b.co minimal email",
@@ -2392,7 +2392,7 @@ public:
             "valid.email+tag@example.co.uk",
             "Contact us at support@company.com for help",
             "Multiple: first@test.com, second@demo.org",
-            "invalid@.com and test@domain", // Both invalid
+            "invalid@.com and test@domain",
             std::string(1000, 'x') + "hidden@email.com" + std::string(1000, 'y'),
 
             "user@example.com",
@@ -2462,61 +2462,230 @@ public:
         const int numThreads = std::thread::hardware_concurrency();
         const int iterationsPerThread = 100000;
 
-        std::cout << "Threads: " << numThreads << std::endl;
-        std::cout << "Iterations per thread: " << iterationsPerThread << std::endl;
-        std::cout << "Test cases: " << testCases.size() << "\n";
-        std::cout << "Total operations: " << (numThreads * iterationsPerThread * testCases.size()) << "\n";
-        std::cout << "Starting benchmark...\n"
-                  << std::flush;
+        std::cout << "Configuration:\n";
+        std::cout << "  Threads: " << numThreads << "\n";
+        std::cout << "  Iterations per thread: " << iterationsPerThread << "\n";
+        std::cout << "  Test cases: " << testCases.size() << "\n";
+        std::cout << "  Total operations per method: "
+                  << (numThreads * iterationsPerThread * testCases.size()) << "\n\n";
 
-        auto start = std::chrono::high_resolution_clock::now();
+        // ============================================================================
+        // BENCHMARK 1: isValid() - Exact Email Validation
+        // ============================================================================
+        std::cout << std::string(100, '-') << "\n";
+        std::cout << "BENCHMARK 1: isValid() - Exact Email Validation\n";
+        std::cout << std::string(100, '-') << "\n";
 
-        std::atomic<long long> totalValidations{0};
-        std::vector<std::thread> threads;
-
-        for (int t = 0; t < numThreads; ++t)
         {
-            threads.emplace_back(
-                [&testCases, &totalValidations, iterationsPerThread]()
-                {
-                    EmailValidator localValidator;
-                    EmailScanner localScanner;
+            auto start = std::chrono::high_resolution_clock::now();
+            std::atomic<long long> validCount{0};
+            std::vector<std::thread> threads;
 
-                    long long localValidations = 0;
-
-                    for (int i = 0; i < iterationsPerThread; ++i)
+            for (int t = 0; t < numThreads; ++t)
+            {
+                threads.emplace_back(
+                    [&testCases, &validCount, iterationsPerThread]()
                     {
-                        for (const auto &test : testCases)
+                        EmailValidator localValidator;
+                        long long localValid = 0;
+
+                        for (int i = 0; i < iterationsPerThread; ++i)
                         {
-                            if (localValidator.isValid(test) || localScanner.contains(test))
+                            for (const auto &test : testCases)
                             {
-                                ++localValidations;
+                                if (localValidator.isValid(test))
+                                {
+                                    ++localValid;
+                                }
                             }
                         }
-                    }
 
-                    totalValidations.fetch_add(localValidations, std::memory_order_relaxed);
-                });
+                        validCount.fetch_add(localValid, std::memory_order_relaxed);
+                    });
+            }
+
+            for (auto &thread : threads)
+            {
+                thread.join();
+            }
+
+            auto end = std::chrono::high_resolution_clock::now();
+            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+
+            long long totalOps = static_cast<long long>(numThreads) * iterationsPerThread * testCases.size();
+
+            std::cout << "Time: " << duration.count() << " ms\n";
+            std::cout << "Operations: " << totalOps << "\n";
+            std::cout << "Throughput: " << (totalOps * 1000 / duration.count()) << " ops/sec\n";
+            std::cout << "Valid emails found: " << validCount.load() << "\n";
+            std::cout << "Avg latency: " << (duration.count() * 1000000.0 / totalOps) << " ns/op\n\n";
         }
 
-        for (auto &thread : threads)
-        {
-            thread.join();
-        }
-
-        auto end = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-
-        long long totalOps = static_cast<long long>(numThreads) * iterationsPerThread * testCases.size();
-        int millisecondsInOneSecond = 1000;
-
-        std::cout << "\n"
-                  << std::string(100, '-') << "\n";
-        std::cout << "RESULTS:\n";
+        // ============================================================================
+        // BENCHMARK 2: contains() - Fast Email Detection
+        // ============================================================================
         std::cout << std::string(100, '-') << "\n";
-        std::cout << "Time: " << duration.count() << " ms\n";
-        std::cout << "Ops/sec: " << (totalOps * millisecondsInOneSecond / duration.count()) << "\n";
-        std::cout << "Validations: " << totalValidations.load() << "\n";
+        std::cout << "BENCHMARK 2: contains() - Fast Email Detection\n";
+        std::cout << std::string(100, '-') << "\n";
+
+        {
+            auto start = std::chrono::high_resolution_clock::now();
+            std::atomic<long long> foundCount{0};
+            std::vector<std::thread> threads;
+
+            for (int t = 0; t < numThreads; ++t)
+            {
+                threads.emplace_back(
+                    [&testCases, &foundCount, iterationsPerThread]()
+                    {
+                        EmailScanner localScanner;
+                        long long localFound = 0;
+
+                        for (int i = 0; i < iterationsPerThread; ++i)
+                        {
+                            for (const auto &test : testCases)
+                            {
+                                if (localScanner.contains(test))
+                                {
+                                    ++localFound;
+                                }
+                            }
+                        }
+
+                        foundCount.fetch_add(localFound, std::memory_order_relaxed);
+                    });
+            }
+
+            for (auto &thread : threads)
+            {
+                thread.join();
+            }
+
+            auto end = std::chrono::high_resolution_clock::now();
+            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+
+            long long totalOps = static_cast<long long>(numThreads) * iterationsPerThread * testCases.size();
+
+            std::cout << "Time: " << duration.count() << " ms\n";
+            std::cout << "Operations: " << totalOps << "\n";
+            std::cout << "Throughput: " << (totalOps * 1000 / duration.count()) << " ops/sec\n";
+            std::cout << "Texts with emails: " << foundCount.load() << "\n";
+            std::cout << "Avg latency: " << (duration.count() * 1000000.0 / totalOps) << " ns/op\n\n";
+        }
+
+        // ============================================================================
+        // BENCHMARK 3: extract() - Full Email Extraction
+        // ============================================================================
+        std::cout << std::string(100, '-') << "\n";
+        std::cout << "BENCHMARK 3: extract() - Full Email Extraction\n";
+        std::cout << std::string(100, '-') << "\n";
+
+        {
+            auto start = std::chrono::high_resolution_clock::now();
+            std::atomic<long long> extractedCount{0};
+            std::vector<std::thread> threads;
+
+            for (int t = 0; t < numThreads; ++t)
+            {
+                threads.emplace_back(
+                    [&testCases, &extractedCount, iterationsPerThread]()
+                    {
+                        EmailScanner localScanner;
+                        long long localExtracted = 0;
+
+                        for (int i = 0; i < iterationsPerThread; ++i)
+                        {
+                            for (const auto &test : testCases)
+                            {
+                                auto emails = localScanner.extract(test);
+                                localExtracted += emails.size();
+                            }
+                        }
+
+                        extractedCount.fetch_add(localExtracted, std::memory_order_relaxed);
+                    });
+            }
+
+            for (auto &thread : threads)
+            {
+                thread.join();
+            }
+
+            auto end = std::chrono::high_resolution_clock::now();
+            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+
+            long long totalOps = static_cast<long long>(numThreads) * iterationsPerThread * testCases.size();
+
+            std::cout << "Time: " << duration.count() << " ms\n";
+            std::cout << "Operations: " << totalOps << "\n";
+            std::cout << "Throughput: " << (totalOps * 1000 / duration.count()) << " ops/sec\n";
+            std::cout << "Emails extracted: " << extractedCount.load() << "\n";
+            std::cout << "Avg latency: " << (duration.count() * 1000000.0 / totalOps) << " ns/op\n\n";
+        }
+
+        // ============================================================================
+        // BENCHMARK 4: Combined Workload (Real-world scenario)
+        // ============================================================================
+        std::cout << std::string(100, '-') << "\n";
+        std::cout << "BENCHMARK 4: Combined Workload (Real-world)\n";
+        std::cout << std::string(100, '-') << "\n";
+
+        {
+            auto start = std::chrono::high_resolution_clock::now();
+            std::atomic<long long> totalOperations{0};
+            std::vector<std::thread> threads;
+
+            for (int t = 0; t < numThreads; ++t)
+            {
+                threads.emplace_back(
+                    [&testCases, &totalOperations, iterationsPerThread]()
+                    {
+                        EmailValidator localValidator;
+                        EmailScanner localScanner;
+                        long long localOps = 0;
+
+                        for (int i = 0; i < iterationsPerThread; ++i)
+                        {
+                            for (const auto &test : testCases)
+                            {
+                                // Real-world pattern: check first, extract if found
+                                if (localScanner.contains(test))
+                                {
+                                    auto emails = localScanner.extract(test);
+                                    localOps += emails.size();
+                                }
+
+                                // Or validate exact emails
+                                if (localValidator.isValid(test))
+                                {
+                                    ++localOps;
+                                }
+                            }
+                        }
+
+                        totalOperations.fetch_add(localOps, std::memory_order_relaxed);
+                    });
+            }
+
+            for (auto &thread : threads)
+            {
+                thread.join();
+            }
+
+            auto end = std::chrono::high_resolution_clock::now();
+            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+
+            long long totalOps = static_cast<long long>(numThreads) * iterationsPerThread * testCases.size();
+
+            std::cout << "Time: " << duration.count() << " ms\n";
+            std::cout << "Operations: " << totalOps << "\n";
+            std::cout << "Throughput: " << (totalOps * 1000 / duration.count()) << " ops/sec\n";
+            std::cout << "Results produced: " << totalOperations.load() << "\n";
+            std::cout << "Avg latency: " << (duration.count() * 1000000.0 / totalOps) << " ns/op\n\n";
+        }
+
+        std::cout << std::string(100, '=') << "\n";
+        std::cout << "✓ Performance Benchmark Complete\n";
         std::cout << std::string(100, '=') << "\n\n";
     }
 };
