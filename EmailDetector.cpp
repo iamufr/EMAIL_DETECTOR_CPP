@@ -899,7 +899,7 @@ private:
     static constexpr size_t MAX_QUOTE_SCAN = 100;
     static constexpr size_t MAX_MEMORY_BUDGET = 5 * 1024 * 1024; // 5MB
     static constexpr size_t MAX_INITIAL_RESERVE = 100;
-    static constexpr size_t MAX_AT_SYMBOLS = 5000;
+    static constexpr size_t MAX_AT_SYMBOLS = 1000;
     static constexpr size_t MAX_SEEN_SET_SIZE = 5000;
 
     mutable ValidationStats stats_;
@@ -1016,8 +1016,9 @@ private:
 
             if (atPos >= 2)
             {
-                for (size_t i = atPos - 1; i > absoluteMin && i > 0; --i)
+                for (size_t i = atPos; i > absoluteMin + 1 && i > 1;)
                 {
+                    --i;
                     ++quotesSeen;
 
                     if (quotesSeen > MAX_QUOTE_SCAN)
@@ -1785,17 +1786,24 @@ public:
             {"\"user\\\"name\"@example.com", true, "Escaped quote in quoted string"},
             {"\"user\\\\name\"@example.com", true, "Escaped backslash"},
 
-            // IP literals
+            // IPv4 tests
             {"user@[192.168.1.1]", true, "IPv4 literal"},
-            {"user@[IPv6:2001:db8::1]", true, "IPv6 literal"},
+            {"user@[10.1.2.3]", true, "IPv4 Leading Zeros in the IP"},
+            {"admin@[192.168.1.1]", true, "IPv4 Leading Zeros in the IP"},
+            {"root@[0.0.0.0]", true, "IPv4 Boundary IP Address"},
+            {"broadcast@[255.255.255.255]", true, "IPv4 Boundary IP Address"},
+            {"loopback@[127.0.0.1]", true, "IPv4 Boundary IP Address"},
+            {R"("spaces are allowed"@[10.1.2.3])", true, "IPv4 with space in local-part inside quotes"},
             {"test@[10.0.0.1]", true, "Private IPv4"},
-            {"user@[IPv6:fe80::1]", true, "IPv6 link-local"},
-            {"user@[IPv6::1]", true, "IPv6 loopback"},
-
+            
             // IPv6 tests
             {"user@[IPv6::]", true, "IPv6 all zeros"},
+            {"user@[IPv6::1]", true, "IPv6 loopback"},
+            {"user@[IPv6:fe80::1]", true, "IPv6 link-local"},
             {"user@[IPv6:2001:db8::]", true, "IPv6 trailing compression"},
+            {"user@[IPv6:2001:db8::1]", true, "IPv6 trailing compression"},
             {"user@[IPv6::ffff:192.0.2.1]", true, "IPv4-mapped IPv6"},
+            {"user@[IPv6:ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff]", true, "IPv6"},
             {"user@[IPv6:2001:db8:85a3::8a2e:370:7334]", true, "IPv6 with compression"},
             {"user@[IPv6:2001:db8:85a3::8a2e:0370:7334:123]", true, "IPv6 full form with prefix"},
             {"user@[IPv6:2001:0db8:0000:0000:0000:ff00:0042:8329]", true, "IPv6 full form"},
