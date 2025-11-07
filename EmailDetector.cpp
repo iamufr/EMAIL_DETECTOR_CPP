@@ -1947,6 +1947,15 @@ public:
             {"user....email@domain.com", true, {"email@domain.com"}, "Multiple dots before valid part"},
             {"user...@domain.com", false, {}, "Only dots before @"},
             {"In this paragraph there are some emails \"user@internal\"@example.com please find out them...!", true, {"user@internal", "\"user@internal\"@example.com"}, "@ inside double quotes allowed in Local Part"},
+            {R"(In this paragraph there are some emails "user0alpha123beta00abcxyz8564jftieeiowreoi9845454jfoieie@internal.com"@example.com please find out them...!)", true, {"user0alpha123beta00abcxyz8564jftieeiowreoi9845454jfoieie@internal.com", R"("user0alpha123beta00abcxyz8564jftieeiowreoi9845454jfoieie@internal.com"@example.com)"}, "@ inside double quotes allowed in Local Part"},
+            {R"(In this paragraph there are some emails "user0alpha123beta00ab[cxyz8564jftieeiowreoi9845454jfoieie ] internal.com"@example.com please find out them...!)", true, {R"("user0alpha123beta00ab[cxyz8564jftieeiowreoi9845454jfoieie ] internal.com"@example.com)"}, "@ inside double quotes allowed in Local Part"},
+            {R"(In this paragraph there are some emails "user0alpha123beta00abcxyz8564jftieeiowreoi9845454jfoieie=_+(internal)..com"@example.com please find out them...!)", true, {R"("user0alpha123beta00abcxyz8564jftieeiowreoi9845454jfoieie=_+(internal)..com"@example.com)"}, "@ inside double quotes allowed in Local Part"},
+            {R"(In this paragraph there are some emails 'user0alpha123beta00abcxyz8564jftieeiowreoi9845454jfoieie@internal.com'@example.com please find out them...!)", true, {"user0alpha123beta00abcxyz8564jftieeiowreoi9845454jfoieie@internal.com", R"('user0alpha123beta00abcxyz8564jftieeiowreoi9845454jfoieie@internal.com'@example.com)"}, "@ inside double quotes allowed in Local Part"},
+            {R"(In this paragraph there are some emails 'user0alpha123beta00ab[cxyz8564jftieeiowreoi9845454jfoieie ] internal.com'@example.com please find out them...!)", true, {R"('user0alpha123beta00ab[cxyz8564jftieeiowreoi9845454jfoieie ] internal.com'@example.com)"}, "@ inside double quotes allowed in Local Part"},
+            {R"(In this paragraph there are some emails 'user0alpha123beta00abcxyz8564jftieeiowreoi9845454jfoieie=_+(internal)..com'@example.com please find out them...!)", true, {R"('user0alpha123beta00abcxyz8564jftieeiowreoi9845454jfoieie=_+(internal)..com'@example.com)"}, "@ inside double quotes allowed in Local Part"},
+            {R"(In this paragraph there are some emails `user0alpha123beta00abcxyz8564jftieeiowreoi9845454jfoieie@internal.com`@example.com please find out them...!)", true, {"user0alpha123beta00abcxyz8564jftieeiowreoi9845454jfoieie@internal.com", R"(`user0alpha123beta00abcxyz8564jftieeiowreoi9845454jfoieie@internal.com`@example.com)"}, "@ inside double quotes allowed in Local Part"},
+            {R"(In this paragraph there are some emails `user0alpha123beta00ab[cxyz8564jftieeiowreoi9845454jfoieie ] internal.com`@example.com please find out them...!)", true, {R"(`user0alpha123beta00ab[cxyz8564jftieeiowreoi9845454jfoieie ] internal.com`@example.com)"}, "@ inside double quotes allowed in Local Part"},
+            {R"(In this paragraph there are some emails `user0alpha123beta00abcxyz8564jftieeiowreoi9845454jfoieie=_+(internal)..com`@example.com please find out them...!)", true, {R"(`user0alpha123beta00abcxyz8564jftieeiowreoi9845454jfoieie=_+(internal)..com`@example.com)"}, "@ inside double quotes allowed in Local Part"},
             {"user@domain.com@", true, {"user@domain.com"}, "@ at the end"},
             {"27 age and !-+alphatyicbnkdleo$#-=+xkthes123fd56569565@somedomain.com and othere data missing...!", true, {"alphatyicbnkdleo$#-=+xkthes123fd56569565@somedomain.com"}, "Find the alphabet or dight if any invalid special character found before @"},
             {"27 age and alphatyicbnkdleo$#-=+xkthes?--=:-+123fd56569565@gmail.co.uk and othere data missing...!", true, {"123fd56569565@gmail.co.uk"}, "Find the alphabet or dight if any invalid special character found before @"},
@@ -2105,7 +2114,7 @@ public:
 
             // Long local parts with issues
             {"a" + std::string(70, 'x') + "@domain.com", false, {}, "Local part too long (>64)"},
-            {"prefix###" + std::string(60, 'x') + "@domain.com", false, {}, "Long part after skip"},
+            {"prefix###" + std::string(60, 'x') + "@domain.com", true, {"x###" + std::string(60, 'x') + "@domain.com"}, "Long part after skip"},
             {"x" + std::string(63, 'a') + "@domain.com", true, {"x" + std::string(63, 'a') + "@domain.com"}, "Exactly 64 chars (valid)"},
 
             // Hyphen positions in local part
