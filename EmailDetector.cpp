@@ -978,17 +978,21 @@ private:
             return {atPos, atPos, false, atPos + 1};
         }
 
-        static constexpr size_t MAX_DOMAIN_SCAN = 253;
+        static constexpr size_t MAX_DOMAIN_PART = 255;
         size_t domain_chars = 0;
+        bool didTrimDomain = false;
 
         while (end < len && CharacterClassifier::isDomainChar(static_cast<unsigned char>(data[end])))
         {
             SAFE_ASSERT(end < len, "findEmailBoundaries domain scan bounds");
             ++end;
+            ++domain_chars;
 
-            if (++domain_chars > MAX_DOMAIN_SCAN)
+            if (domain_chars > MAX_DOMAIN_PART)
             {
-                return {atPos, atPos, false, atPos + 1};
+                end = atPos + 1 + MAX_DOMAIN_PART;
+                didTrimDomain = true;
+                break;
             }
         }
 
@@ -1076,6 +1080,7 @@ private:
         bool hitInvalidChar = false;
         size_t invalidCharPos = atPos;
         bool didRecovery = false;
+        bool didTrim = false;
         size_t charsScanned = 0;
 
         while (start > effectiveMin && start > 0 && charsScanned < MAX_BACKWARD_SCAN_CHARS)
@@ -1258,6 +1263,55 @@ private:
             size_t skip = std::min(atPos + 1, len);
             return {atPos, atPos, false, skip};
         }
+        
+        static constexpr size_t MAX_LOCAL_PART = 64;
+        if ((atPos - start) > MAX_LOCAL_PART)
+        {
+            didTrim = true;
+            start = atPos - MAX_LOCAL_PART;
+
+            while (start < atPos && data[start] == '.')
+            {
+                SAFE_ASSERT(start < len, "findEmailBoundaries trimming dot removal");
+                ++start;
+            }
+
+            if (start > effectiveMin && start > 0)
+            {
+                unsigned char prevChar = static_cast<unsigned char>(data[start - 1]);
+
+                if (!CharacterClassifier::isScanBoundary(prevChar) &&
+                    !CharacterClassifier::isInvalidLocalChar(prevChar) &&
+                    prevChar != '@' && prevChar != '.' && prevChar != '=' &&
+                    prevChar != '\'' && prevChar != '`' && prevChar != '"' &&
+                    prevChar != '/')
+                {
+                    size_t firstValid = findFirstAlnum(data, len, start, atPos);
+                    if (firstValid != SIZE_MAX && firstValid < atPos)
+                    {
+                        start = firstValid;
+                    }
+                    else
+                    {
+                        firstValid = findFirstAtext(data, len, start, atPos);
+                        if (firstValid != SIZE_MAX && firstValid < atPos)
+                        {
+                            start = firstValid;
+                        }
+                    }
+                }
+            }
+
+            if ((atPos - start) > MAX_LOCAL_PART)
+            {
+                start = atPos - MAX_LOCAL_PART;
+            }
+
+            while (start < atPos && data[start] == '.')
+            {
+                ++start;
+            }
+        }
 
         bool validBoundaries = true;
 
@@ -1266,7 +1320,11 @@ private:
             SAFE_ASSERT(start - 1 < len, "findEmailBoundaries boundary validation");
             unsigned char prevChar = static_cast<unsigned char>(data[start - 1]);
 
-            if (didRecovery)
+            if (didTrim)
+            {
+                validBoundaries = true;
+            }
+            else if (didRecovery)
             {
                 validBoundaries = !CharacterClassifier::isAlphaNum(prevChar);
             }
@@ -1282,7 +1340,7 @@ private:
                 validBoundaries = false;
             }
 
-            if (CharacterClassifier::isQuoteChar(prevChar) && start > effectiveMin + 1 && start >= 2)
+            if (!didTrim && CharacterClassifier::isQuoteChar(prevChar) && start > effectiveMin + 1 && start >= 2)
             {
                 unsigned char prevPrevChar = static_cast<unsigned char>(data[start - 2]);
                 if (CharacterClassifier::isScanBoundary(prevPrevChar) ||
@@ -1293,7 +1351,7 @@ private:
                 }
             }
 
-            if (prevChar == '/' && start > effectiveMin + 1 && start >= 2)
+            if (!didTrim && prevChar == '/' && start > effectiveMin + 1 && start >= 2)
             {
                 if (data[start - 2] == '/')
                 {
@@ -2107,8 +2165,12 @@ public:
             {"user@domain.com then admin@test.org", true, {"user@domain.com", "admin@test.org"}, "Two valid separate emails"},
 
             // Long local parts with issues
-            {"a" + std::string(70, 'x') + "@domain.com", false, {}, "Local part too long (>64)"},
-            {"prefix###" + std::string(60, 'x') + "@domain.com", true, {"x###" + std::string(60, 'x') + "@domain.com"}, "Long part after skip"},
+            {"a" + std::string(70, 'x') + "@domain.com", true, {std::string(64, 'x') + "@domain.com"}, "Local part too long (>64)"},
+            {"prefix###" + std::string(60, 'x') + "@domain.com", true, {"x###" + std::string(60, 'x') + "@domain.com"}, "Long part after skip (slice to last 64)"},
+            {std::string(1000, 'x') + "hidden@email.com" + std::string(1000, 'y'), true, {
+                                                                                             std::string(58, 'x') + "hidden@email.com" + std::string(246, 'y'),
+                                                                                         },
+             "Long part after skip (slice to last 64 in local-part and 255 in domain-part)"},
             {"x" + std::string(63, 'a') + "@domain.com", true, {"x" + std::string(63, 'a') + "@domain.com"}, "Exactly 64 chars (valid)"},
 
             // Hyphen positions in local part
