@@ -894,7 +894,7 @@ private:
     static constexpr size_t MAX_INPUT_SIZE = 10 * 1024 * 1024;
     static constexpr size_t MAX_LEFT_SCAN = 4096;
     static constexpr size_t MAX_EMAILS_EXTRACT = 10000;
-    static constexpr size_t MAX_BACKTRACK_PER_AT = 200;
+    static constexpr size_t MAX_BACKTRACK_PER_AT = 330;
     static constexpr size_t MAX_BACKWARD_SCAN_CHARS = 200;
     static constexpr size_t MAX_QUOTE_SCAN = 100;
     static constexpr size_t MAX_MEMORY_BUDGET = 5 * 1024 * 1024; // 5MB
@@ -910,6 +910,7 @@ private:
         size_t end;
         bool validBoundaries;
         size_t skipTo;
+        bool didTrimDomain;
     };
 
     [[nodiscard]] static FORCE_INLINE size_t findFirstAlnum(const char *data, size_t dataLen,
@@ -969,31 +970,47 @@ private:
         const char *data = text.data();
 
         if (UNLIKELY(atPos >= len))
-            return {atPos, atPos, false, atPos};
+            return {atPos, atPos, false, atPos, false};
 
         size_t end = atPos + 1;
 
         if (UNLIKELY(end < len && data[end] == '['))
         {
-            return {atPos, atPos, false, atPos + 1};
+            return {atPos, atPos, false, atPos + 1, false};
         }
 
         static constexpr size_t MAX_DOMAIN_PART = 255;
+        static constexpr size_t MAX_LABEL_LENGTH = 63;
         size_t domain_chars = 0;
         bool didTrimDomain = false;
+        size_t current_label_length = 0;
 
         while (end < len && CharacterClassifier::isDomainChar(static_cast<unsigned char>(data[end])))
         {
             SAFE_ASSERT(end < len, "findEmailBoundaries domain scan bounds");
-            ++end;
-            ++domain_chars;
 
-            if (domain_chars > MAX_DOMAIN_PART)
+            if (domain_chars >= MAX_DOMAIN_PART)
             {
                 end = atPos + 1 + MAX_DOMAIN_PART;
                 didTrimDomain = true;
                 break;
             }
+
+            if (data[end] == '.')
+            {
+                current_label_length = 0;
+            }
+            else
+            {
+                ++current_label_length;
+                if (current_label_length > MAX_LABEL_LENGTH)
+                {
+                    didTrimDomain = true;
+                }
+            }
+
+            ++end;
+            ++domain_chars;
         }
 
         while (end > atPos + 1 && data[end - 1] == '.')
@@ -1067,7 +1084,7 @@ private:
 
                             if (rightBoundaryValid)
                             {
-                                return {i, end, true, 0};
+                                return {i, end, true, 0, false};
                             }
                         }
                     }
@@ -1234,7 +1251,7 @@ private:
                 else
                 {
                     size_t skip = std::min(invalidCharPos + 1, len);
-                    return {atPos, atPos, false, skip};
+                    return {atPos, atPos, false, skip, false};
                 }
             }
         }
@@ -1261,9 +1278,9 @@ private:
         if (UNLIKELY(start >= atPos))
         {
             size_t skip = std::min(atPos + 1, len);
-            return {atPos, atPos, false, skip};
+            return {atPos, atPos, false, skip, false};
         }
-        
+
         static constexpr size_t MAX_LOCAL_PART = 64;
         if ((atPos - start) > MAX_LOCAL_PART)
         {
@@ -1360,7 +1377,7 @@ private:
             }
         }
 
-        if (end < len && validBoundaries)
+        if (end < len && validBoundaries && !didTrimDomain)
         {
             SAFE_ASSERT(end < len, "findEmailBoundaries right boundary");
             unsigned char nextChar = static_cast<unsigned char>(data[end]);
@@ -1372,7 +1389,7 @@ private:
             }
         }
 
-        return {start, end, validBoundaries, 0};
+        return {start, end, validBoundaries, 0, didTrimDomain};
     }
 
 public:
@@ -1472,8 +1489,11 @@ public:
                     mode = LocalPartValidator::ValidationMode::EXACT;
                 }
 
-                if (LocalPartValidator::validate(text, boundaries.start, atPos, mode) &&
-                    DomainPartValidator::validate(text, atPos + 1, boundaries.end))
+                bool localValid = LocalPartValidator::validate(text, boundaries.start, atPos, mode);
+                bool domainValid = boundaries.didTrimDomain ||
+                                   DomainPartValidator::validate(text, atPos + 1, boundaries.end);
+
+                if (localValid && domainValid)
                 {
                     minScannedIndex = std::max(minScannedIndex, boundaries.start);
                     lastConsumedEnd = std::max(lastConsumedEnd, boundaries.end);
@@ -1622,8 +1642,11 @@ public:
                     mode = LocalPartValidator::ValidationMode::EXACT;
                 }
 
-                if (LocalPartValidator::validate(text, boundaries.start, atPos, mode) &&
-                    DomainPartValidator::validate(text, atPos + 1, boundaries.end))
+                bool localValid = LocalPartValidator::validate(text, boundaries.start, atPos, mode);
+                bool domainValid = boundaries.didTrimDomain ||
+                                   DomainPartValidator::validate(text, atPos + 1, boundaries.end);
+
+                if (localValid && domainValid)
                 {
                     if (UNLIKELY(boundaries.start >= text.length() ||
                                  boundaries.end > text.length() ||
@@ -2167,6 +2190,14 @@ public:
             // Long local parts with issues
             {"a" + std::string(70, 'x') + "@domain.com", true, {std::string(64, 'x') + "@domain.com"}, "Local part too long (>64)"},
             {"prefix###" + std::string(60, 'x') + "@domain.com", true, {"x###" + std::string(60, 'x') + "@domain.com"}, "Long part after skip (slice to last 64)"},
+            {std::string(1000, 'x') + "hidden@email.com" + std::string(60, 'y'), true, {
+                                                                                           std::string(58, 'x') + "hidden@email.com" + std::string(60, 'y'),
+                                                                                       },
+             "Long part after skip (slice to last 64)"},
+            {std::string(1000, 'x') + "hidden@email.com" + std::string(200, 'y'), true, {
+                                                                                            std::string(58, 'x') + "hidden@email.com" + std::string(200, 'y'),
+                                                                                        },
+             "Long part after skip (slice to last 64)"},
             {std::string(1000, 'x') + "hidden@email.com" + std::string(1000, 'y'), true, {
                                                                                              std::string(58, 'x') + "hidden@email.com" + std::string(246, 'y'),
                                                                                          },
