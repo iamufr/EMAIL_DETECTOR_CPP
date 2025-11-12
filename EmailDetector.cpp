@@ -38,6 +38,40 @@
 #define FORCE_INLINE inline
 #endif
 
+// ====================================================================================================
+// ERROR TRACKING
+// ====================================================================================================
+
+class ThreadSafeErrorCounter
+{
+private:
+    static std::atomic<uint64_t> &getCounter()
+    {
+        static std::atomic<uint64_t> counter{0};
+        return counter;
+    }
+
+public:
+    static void recordError() noexcept
+    {
+        getCounter().fetch_add(1, std::memory_order_relaxed);
+    }
+
+    static uint64_t getCount() noexcept
+    {
+        return getCounter().load(std::memory_order_relaxed);
+    }
+
+    static void reset() noexcept
+    {
+        getCounter().store(0, std::memory_order_relaxed);
+    }
+};
+
+// ====================================================================================================
+// MACROS
+// ====================================================================================================
+
 [[nodiscard]] constexpr size_t safe_subtract(size_t a, size_t b) noexcept
 {
     return (a > b) ? (a - b) : 0;
@@ -51,20 +85,42 @@
     return true;
 }
 
+// silently fails and records error
+#define PRODUCTION_CHECK_BOOL(condition, message)  \
+    do                                             \
+    {                                              \
+        const bool cond_result = !!(condition);    \
+        if (UNLIKELY(!cond_result))                \
+        {                                          \
+            ThreadSafeErrorCounter::recordError(); \
+            return false;                          \
+        }                                          \
+    } while (0)
+
+// Specialized macro for EmailBoundaries return type
+#define PRODUCTION_CHECK_BOUNDARIES(condition, message, atPos) \
+    do                                                         \
+    {                                                          \
+        const bool cond_result = !!(condition);                \
+        if (UNLIKELY(!cond_result))                            \
+        {                                                      \
+            ThreadSafeErrorCounter::recordError();             \
+            return {atPos, atPos, false, atPos, false};        \
+        }                                                      \
+    } while (0)
+
 #ifndef NDEBUG
-#define SAFE_ASSERT(condition, message)              \
-    do                                               \
-    {                                                \
-        const bool cond_result = !!(condition);      \
-        if (!cond_result)                            \
-        {                                            \
-            std::cerr << "Safety violation detected" \
-                      << std::endl;                  \
-            assert(cond_result);                     \
-        }                                            \
+#define DEBUG_ASSERT(condition, message)        \
+    do                                          \
+    {                                           \
+        const bool cond_result = !!(condition); \
+        if (!cond_result)                       \
+        {                                       \
+            assert(cond_result);                \
+        }                                       \
     } while (0)
 #else
-#define SAFE_ASSERT(condition, message) ((void)0)
+#define DEBUG_ASSERT(condition, message) ((void)0)
 #endif
 
 #define BOUNDS_CHECK(index, size)                                    \
@@ -185,7 +241,6 @@ class IEmailScanner
 public:
     virtual ~IEmailScanner() = default;
     [[nodiscard]] virtual bool contains(std::string_view text) const noexcept = 0;
-
     [[nodiscard]] virtual std::vector<std::string> extract(std::string_view text) const noexcept = 0;
     [[nodiscard]] virtual const ValidationStats &getStats() const noexcept = 0;
 };
@@ -303,7 +358,7 @@ private:
         if (UNLIKELY(start >= end || end > text.length() || (end - start) > MAX_LOCAL_PART))
             return false;
 
-        SAFE_ASSERT(start < text.length() && end <= text.length(), "validateDotAtom bounds");
+        PRODUCTION_CHECK_BOOL(start < text.length() && end <= text.length(), "validateDotAtom bounds");
 
         if (UNLIKELY(text[start] == '.' || text[end - 1] == '.'))
             return false;
@@ -311,6 +366,7 @@ private:
         bool prevDot = false;
         for (size_t i = start; i < end; ++i)
         {
+            PRODUCTION_CHECK_BOOL(i < text.length(), "validateDotAtom loop bounds");
             unsigned char c = static_cast<unsigned char>(text[i]);
             if (c == '.')
             {
@@ -335,7 +391,7 @@ private:
         if (start >= end || end > len || (end - start) > (MAX_LOCAL_PART + 2))
             return false;
 
-        SAFE_ASSERT(start < len && end <= len, "validateQuotedString bounds");
+        PRODUCTION_CHECK_BOOL(start < len && end <= len, "validateQuotedString bounds");
 
         if (text[start] != '"' || text[end - 1] != '"')
             return false;
@@ -346,8 +402,7 @@ private:
         bool escaped = false;
         for (size_t i = start + 1; i < end - 1; ++i)
         {
-            if (UNLIKELY(i >= len))
-                return false;
+            PRODUCTION_CHECK_BOOL(i < len, "validateQuotedString loop bounds");
 
             unsigned char c = static_cast<unsigned char>(text[i]);
             if (escaped)
@@ -379,7 +434,7 @@ private:
         if (UNLIKELY(start >= end || end > len || (end - start) > MAX_LOCAL_PART))
             return false;
 
-        SAFE_ASSERT(start < len && end <= text.length(), "validateScanMode bounds");
+        PRODUCTION_CHECK_BOOL(start < len && end <= text.length(), "validateScanMode bounds");
 
         if (UNLIKELY(text[start] == '"' || text[start] == '.' || text[end - 1] == '.'))
             return false;
@@ -387,8 +442,7 @@ private:
         bool prevDot = false;
         for (size_t i = start; i < end; ++i)
         {
-            if (UNLIKELY(i >= len))
-                return false;
+            PRODUCTION_CHECK_BOOL(i < len, "validateScanMode loop bounds");
 
             unsigned char c = static_cast<unsigned char>(text[i]);
             if (c == '.')
@@ -450,7 +504,7 @@ private:
         if (start >= end || end > len || (end - start) < 1 || (end - start) > MAX_DOMAIN_PART)
             return false;
 
-        SAFE_ASSERT(start < len && end <= len, "validateDomainLabels bounds");
+        PRODUCTION_CHECK_BOOL(start < len && end <= len, "validateDomainLabels bounds");
 
         if (text[start] == '.' || text[start] == '-' ||
             text[end - 1] == '.' || text[end - 1] == '-')
@@ -459,8 +513,7 @@ private:
         bool prevDot = false;
         for (size_t i = start; i < end; ++i)
         {
-            if (UNLIKELY(i >= len))
-                return false;
+            PRODUCTION_CHECK_BOOL(i < len, "validateDomainLabels dot check bounds");
 
             if (text[i] == '.')
             {
@@ -501,15 +554,15 @@ private:
                 if (labelLen == 0 || labelLen > MAX_LABEL_LENGTH)
                     return false;
 
-                if (labelStart >= len || (labelStart + labelLen) > len)
-                    return false;
+                PRODUCTION_CHECK_BOOL(labelStart < len && (labelStart + labelLen) <= len,
+                                      "validateDomainLabels label bounds");
 
                 if (text[labelStart] == '-' || text[labelStart + labelLen - 1] == '-')
                     return false;
 
                 for (size_t j = labelStart; j < labelStart + labelLen; ++j)
                 {
-                    SAFE_ASSERT(j < len, "validateDomainLabels label check bounds");
+                    PRODUCTION_CHECK_BOOL(j < len, "validateDomainLabels label char bounds");
                     unsigned char c = static_cast<unsigned char>(text[j]);
                     if (!CharacterClassifier::isAlphaNum(c) && c != '-')
                         return false;
@@ -544,7 +597,7 @@ private:
         if (start >= end || end > text.length())
             return false;
 
-        SAFE_ASSERT(end <= text.length(), "validateIPv4 end bound");
+        PRODUCTION_CHECK_BOOL(end <= text.length(), "validateIPv4 end bound");
 
         try
         {
@@ -564,7 +617,7 @@ private:
 
                     for (size_t j = numStart; j < i && j < text.length(); ++j)
                     {
-                        SAFE_ASSERT(j < text.length(), "validateIPv4 parsing bounds");
+                        PRODUCTION_CHECK_BOOL(j < text.length(), "validateIPv4 parsing bounds");
 
                         if (!CharacterClassifier::isDigit(static_cast<unsigned char>(text[j])))
                             return false;
@@ -590,7 +643,9 @@ private:
                         break;
 
                     size_t nextStart = 0;
-                    if (!safe_add(i, 1, nextStart) || nextStart > text.length())
+                    if (!safe_add(i, 1, nextStart))
+                        return false;
+                    if (nextStart > text.length())
                         return false;
 
                     numStart = nextStart;
@@ -671,7 +726,7 @@ private:
             if (pos >= end)
                 break;
 
-            SAFE_ASSERT(pos < text.length(), "validateIPv6 position bounds");
+            PRODUCTION_CHECK_BOOL(pos < text.length(), "validateIPv6 position bounds");
 
             if (text[pos] == ':')
             {
@@ -719,7 +774,7 @@ private:
         if (start >= end || end > len)
             return false;
 
-        SAFE_ASSERT(start < len && end <= len, "validateIPLiteral bounds");
+        PRODUCTION_CHECK_BOOL(start < len && end <= len, "validateIPLiteral bounds");
 
         if (text[start] != '[' || text[end - 1] != ']')
             return false;
@@ -824,7 +879,7 @@ public:
             const char *data = email.data();
             for (size_t i = 0; i < len; ++i)
             {
-                SAFE_ASSERT(i < len, "EmailValidator loop bounds");
+                PRODUCTION_CHECK_BOOL(i < len, "EmailValidator loop bounds");
                 char c = data[i];
 
                 if (escaped)
@@ -897,10 +952,11 @@ private:
     static constexpr size_t MAX_BACKTRACK_PER_AT = 330;
     static constexpr size_t MAX_BACKWARD_SCAN_CHARS = 200;
     static constexpr size_t MAX_QUOTE_SCAN = 100;
-    static constexpr size_t MAX_MEMORY_BUDGET = 5 * 1024 * 1024; // 5MB
+    static constexpr size_t MAX_MEMORY_BUDGET = 5 * 1024 * 1024;
     static constexpr size_t MAX_INITIAL_RESERVE = 100;
     static constexpr size_t MAX_AT_SYMBOLS = 1000;
     static constexpr size_t MAX_SEEN_SET_SIZE = 5000;
+    static constexpr size_t MAX_TOTAL_OPERATIONS = 100'000'000;
 
     mutable ValidationStats stats_;
 
@@ -920,7 +976,7 @@ private:
 
         while (pos < limit)
         {
-            SAFE_ASSERT(pos < dataLen, "findFirstAlnum bounds");
+            PRODUCTION_CHECK_BOOL(pos < dataLen, "findFirstAlnum bounds");
             unsigned char uc = static_cast<unsigned char>(data[pos]);
             if (CharacterClassifier::isAlphaNum(uc))
                 return pos;
@@ -936,7 +992,7 @@ private:
 
         while (pos < limit)
         {
-            SAFE_ASSERT(pos < dataLen, "findFirstAtext bounds");
+            PRODUCTION_CHECK_BOOL(pos < dataLen, "findFirstAtext bounds");
             unsigned char uc = static_cast<unsigned char>(data[pos]);
             if (LIKELY(CharacterClassifier::isAtext(uc)))
                 return pos;
@@ -964,10 +1020,16 @@ private:
     }
 
     [[nodiscard]] static EmailBoundaries findEmailBoundaries(std::string_view text, size_t atPos,
-                                                             size_t minScannedIndex) noexcept
+                                                             size_t minScannedIndex,
+                                                             std::atomic<size_t> &opCounter) noexcept
     {
         const size_t len = text.length();
         const char *data = text.data();
+
+        if (opCounter.fetch_add(1, std::memory_order_relaxed) > MAX_TOTAL_OPERATIONS)
+        {
+            return {atPos, atPos, false, atPos, false};
+        }
 
         if (UNLIKELY(atPos >= len))
             return {atPos, atPos, false, atPos, false};
@@ -987,7 +1049,7 @@ private:
 
         while (end < len && CharacterClassifier::isDomainChar(static_cast<unsigned char>(data[end])))
         {
-            SAFE_ASSERT(end < len, "findEmailBoundaries domain scan bounds");
+            PRODUCTION_CHECK_BOUNDARIES(end < len, "findEmailBoundaries domain scan bounds", atPos);
 
             if (domain_chars >= MAX_DOMAIN_PART)
             {
@@ -1011,11 +1073,16 @@ private:
 
             ++end;
             ++domain_chars;
+
+            if (opCounter.fetch_add(1, std::memory_order_relaxed) > MAX_TOTAL_OPERATIONS)
+            {
+                return {atPos, atPos, false, atPos, false};
+            }
         }
 
         while (end > atPos + 1 && data[end - 1] == '.')
         {
-            SAFE_ASSERT(end > 0 && end - 1 < len, "findEmailBoundaries trailing dot removal");
+            PRODUCTION_CHECK_BOUNDARIES(end > 0 && end - 1 < len, "findEmailBoundaries trailing dot removal", atPos);
             --end;
         }
 
@@ -1023,7 +1090,7 @@ private:
         {
             while (end > atPos + 1 && data[end - 1] == '-')
             {
-                SAFE_ASSERT(end > 0 && end - 1 < len, "findEmailBoundaries hyphen removal");
+                PRODUCTION_CHECK_BOUNDARIES(end > 0 && end - 1 < len, "findEmailBoundaries hyphen removal", atPos);
                 --end;
             }
         }
@@ -1041,6 +1108,11 @@ private:
                 {
                     --i;
                     ++quotesSeen;
+
+                    if (opCounter.fetch_add(1, std::memory_order_relaxed) > MAX_TOTAL_OPERATIONS)
+                    {
+                        return {atPos, atPos, false, atPos, false};
+                    }
 
                     if (quotesSeen > MAX_QUOTE_SCAN)
                         break;
@@ -1102,6 +1174,12 @@ private:
 
         while (start > effectiveMin && start > 0 && charsScanned < MAX_BACKWARD_SCAN_CHARS)
         {
+            if (opCounter.fetch_add(1, std::memory_order_relaxed) > MAX_TOTAL_OPERATIONS)
+            {
+                return {atPos, atPos, false, atPos, false};
+            }
+
+            PRODUCTION_CHECK_BOUNDARIES(start > 0, "findEmailBoundaries backward scan start > 0", atPos);
             unsigned char prevChar = static_cast<unsigned char>(data[start - 1]);
 
             if (prevChar == '@')
@@ -1133,7 +1211,13 @@ private:
                     while (lookback >= lookbackLimit && lookback < atPos &&
                            lookback < len && lookbackIterations++ < MAX_LOOKBACK_ITERATIONS)
                     {
-                        SAFE_ASSERT(lookback < len, "findEmailBoundaries lookback");
+                        PRODUCTION_CHECK_BOUNDARIES(lookback < len, "findEmailBoundaries lookback", atPos);
+
+                        if (opCounter.fetch_add(1, std::memory_order_relaxed) > MAX_TOTAL_OPERATIONS)
+                        {
+                            return {atPos, atPos, false, atPos, false};
+                        }
+
                         unsigned char c = static_cast<unsigned char>(data[lookback]);
                         if (CharacterClassifier::isAtext(c) && c != '.')
                         {
@@ -1258,7 +1342,7 @@ private:
 
         while (start < atPos && data[start] == '.')
         {
-            SAFE_ASSERT(start < len, "findEmailBoundaries leading dot removal");
+            PRODUCTION_CHECK_BOUNDARIES(start < len, "findEmailBoundaries leading dot removal", atPos);
             ++start;
         }
 
@@ -1289,7 +1373,7 @@ private:
 
             while (start < atPos && data[start] == '.')
             {
-                SAFE_ASSERT(start < len, "findEmailBoundaries trimming dot removal");
+                PRODUCTION_CHECK_BOUNDARIES(start < len, "findEmailBoundaries trimming dot removal", atPos);
                 ++start;
             }
 
@@ -1334,7 +1418,7 @@ private:
 
         if (start > effectiveMin && start > 0)
         {
-            SAFE_ASSERT(start - 1 < len, "findEmailBoundaries boundary validation");
+            PRODUCTION_CHECK_BOUNDARIES(start - 1 < len, "findEmailBoundaries boundary validation", atPos);
             unsigned char prevChar = static_cast<unsigned char>(data[start - 1]);
 
             if (didTrim)
@@ -1379,7 +1463,7 @@ private:
 
         if (end < len && validBoundaries && !didTrimDomain)
         {
-            SAFE_ASSERT(end < len, "findEmailBoundaries right boundary");
+            PRODUCTION_CHECK_BOUNDARIES(end < len, "findEmailBoundaries right boundary", atPos);
             unsigned char nextChar = static_cast<unsigned char>(data[end]);
             if (!CharacterClassifier::isScanRightBoundary(nextChar) &&
                 nextChar != '\'' && nextChar != '`' && nextChar != '"' &&
@@ -1418,11 +1502,19 @@ public:
             size_t minScannedIndex = 0;
             size_t lastConsumedEnd = 0;
 
+            std::atomic<size_t> totalOps{0};
+
             static constexpr size_t MAX_TOTAL_CHARS_SCANNED = 1'000'000;
             size_t totalCharsScanned = 0;
 
             while (pos < len)
             {
+                if (totalOps.fetch_add(1, std::memory_order_relaxed) > MAX_TOTAL_OPERATIONS)
+                {
+                    stats_.recordError();
+                    break;
+                }
+
                 auto atPosOpt = safe_memchr_index(data, pos, len, '@');
                 if (!atPosOpt)
                     break;
@@ -1441,7 +1533,7 @@ public:
                     continue;
                 }
 
-                auto boundaries = findEmailBoundaries(text, atPos, minScannedIndex);
+                auto boundaries = findEmailBoundaries(text, atPos, minScannedIndex, totalOps);
 
                 size_t charsScanned = 0;
                 size_t temp = 0;
@@ -1558,6 +1650,8 @@ public:
             size_t extractedCount = 0;
             size_t atSymbolsProcessed = 0;
 
+            std::atomic<size_t> totalOps{0};
+
             static constexpr size_t MAX_SCAN_ITERATIONS = 100'000;
             size_t iterations = 0;
             static constexpr size_t MAX_TOTAL_CHARS_SCANNED = 1'000'000;
@@ -1566,6 +1660,12 @@ public:
 
             while (pos < len && iterations++ < MAX_SCAN_ITERATIONS)
             {
+                if (totalOps.fetch_add(1, std::memory_order_relaxed) > MAX_TOTAL_OPERATIONS)
+                {
+                    stats_.recordError();
+                    break;
+                }
+
                 if (UNLIKELY(extractedCount >= MAX_EMAILS_EXTRACT))
                     break;
 
@@ -1594,7 +1694,7 @@ public:
                     continue;
                 }
 
-                auto boundaries = findEmailBoundaries(text, atPos, minScannedIndex);
+                auto boundaries = findEmailBoundaries(text, atPos, minScannedIndex, totalOps);
 
                 size_t charsScanned = 0;
                 size_t temp = 0;
@@ -1657,7 +1757,9 @@ public:
                     }
 
                     std::string email(text.substr(boundaries.start, boundaries.end - boundaries.start));
-                    size_t emailMemory = email.length() + sizeof(std::string) + 32;
+
+                    size_t emailMemory = email.length() + sizeof(std::string) +
+                                         sizeof(void *) * 2;
                     size_t newMemory = 0;
 
                     if (!safe_add(estimatedMemory, emailMemory, newMemory) ||
