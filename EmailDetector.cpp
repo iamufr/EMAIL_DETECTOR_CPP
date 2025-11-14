@@ -655,7 +655,7 @@ private:
             if (octetIdx != 4)
                 return false;
 
-            if (numStart == 0 || numStart - 1 != end)
+            if (numStart == 0 || numStart != end + 1)
                 return false;
 
             return true;
