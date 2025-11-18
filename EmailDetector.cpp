@@ -225,27 +225,6 @@ public:
 };
 
 // ====================================================================================================
-// INTERFACES (SOLID: Interface Segregation Principle)
-// ====================================================================================================
-
-class IEmailValidator
-{
-public:
-    virtual ~IEmailValidator() = default;
-    [[nodiscard]] virtual bool isValid(std::string_view email) const noexcept = 0;
-    [[nodiscard]] virtual const ValidationStats &getStats() const noexcept = 0;
-};
-
-class IEmailScanner
-{
-public:
-    virtual ~IEmailScanner() = default;
-    [[nodiscard]] virtual bool contains(std::string_view text) const noexcept = 0;
-    [[nodiscard]] virtual std::vector<std::string> extract(std::string_view text) const noexcept = 0;
-    [[nodiscard]] virtual const ValidationStats &getStats() const noexcept = 0;
-};
-
-// ====================================================================================================
 // CHARACTER CLASSIFICATION (Lookup Tables) (Single Responsibility Principle)
 // ====================================================================================================
 
@@ -843,7 +822,7 @@ public:
 // EMAIL VALIDATOR (Open/Closed Principle - extensible through composition)
 // ====================================================================================================
 
-class EmailValidator : public IEmailValidator
+class EmailValidator final
 {
 private:
     static constexpr size_t MIN_EMAIL_SIZE = 5;
@@ -852,7 +831,7 @@ private:
     mutable ValidationStats stats_;
 
 public:
-    [[nodiscard]] bool isValid(std::string_view email) const noexcept override
+    [[nodiscard]] bool isValid(std::string_view email) const noexcept
     {
         stats_.recordValidation();
 
@@ -933,7 +912,7 @@ public:
         }
     }
 
-    [[nodiscard]] const ValidationStats &getStats() const noexcept override
+    [[nodiscard]] const ValidationStats &getStats() const noexcept
     {
         return stats_;
     }
@@ -943,7 +922,7 @@ public:
 // EMAIL SCANNER WITH HEURISTIC EXTRACTION (Single Responsibility Principle)
 // ====================================================================================================
 
-class EmailScanner : public IEmailScanner
+class EmailScanner final
 {
 private:
     static constexpr size_t MAX_INPUT_SIZE = 10 * 1024 * 1024;
@@ -1464,7 +1443,7 @@ private:
     }
 
 public:
-    [[nodiscard]] bool contains(std::string_view text) const noexcept override
+    [[nodiscard]] bool contains(std::string_view text) const noexcept
     {
         const size_t len = text.length();
 
@@ -1559,7 +1538,7 @@ public:
         return false;
     }
 
-    [[nodiscard]] std::vector<std::string> extract(std::string_view text) const noexcept override
+    [[nodiscard]] std::vector<std::string> extract(std::string_view text) const noexcept
     {
         std::vector<std::string> emails;
 
@@ -1728,7 +1707,7 @@ public:
         return emails;
     }
 
-    [[nodiscard]] const ValidationStats &getStats() const noexcept override
+    [[nodiscard]] const ValidationStats &getStats() const noexcept
     {
         return stats_;
     }
@@ -1740,38 +1719,29 @@ public:
 
 class EmailValidatorFactory
 {
-private:
-    static IEmailValidator &getThreadLocalValidator()
+public:
+    // Return by value (copy/move - cheap for stateless objects)
+    [[nodiscard]] static EmailValidator createValidator()
+    {
+        return EmailValidator{}; // Direct construction, no heap allocation
+    }
+
+    [[nodiscard]] static EmailScanner createScanner()
+    {
+        return EmailScanner{}; // Direct construction, no heap allocation
+    }
+
+    // Return reference to thread-local instance (zero overhead)
+    [[nodiscard]] static EmailValidator &getValidator()
     {
         thread_local EmailValidator instance;
-        return instance;
+        return instance; // Direct type, no interface
     }
 
-    static IEmailScanner &getThreadLocalScanner()
+    [[nodiscard]] static EmailScanner &getScanner()
     {
         thread_local EmailScanner instance;
-        return instance;
-    }
-
-public:
-    [[nodiscard]] static std::unique_ptr<IEmailValidator> createValidator()
-    {
-        return std::make_unique<EmailValidator>();
-    }
-
-    [[nodiscard]] static std::unique_ptr<IEmailScanner> createScanner()
-    {
-        return std::make_unique<EmailScanner>();
-    }
-
-    [[nodiscard]] static IEmailValidator &getValidator()
-    {
-        return getThreadLocalValidator();
-    }
-
-    [[nodiscard]] static IEmailScanner &getScanner()
-    {
-        return getThreadLocalScanner();
+        return instance; // Direct type, no interface
     }
 };
 
@@ -1928,7 +1898,7 @@ public:
         int passed = 0;
         for (const auto &test : tests)
         {
-            bool result = validator->isValid(test.input);
+            bool result = validator.isValid(test.input);
             bool testPassed = (result == test.expected);
 
             std::cout << (testPassed ? "✓" : "✗") << " "
@@ -2309,8 +2279,8 @@ public:
         int passed = 0;
         for (const auto &test : tests)
         {
-            bool found = scanner->contains(test.input);
-            auto extracted = scanner->extract(test.input);
+            bool found = scanner.contains(test.input);
+            auto extracted = scanner.extract(test.input);
 
             bool testPassed = (found == test.shouldFind);
 
@@ -2396,7 +2366,7 @@ public:
         // Test 1: Many @ symbols
         std::string many_ats(10000, '@');
         auto start = std::chrono::high_resolution_clock::now();
-        auto result = scanner->extract(many_ats);
+        auto result = scanner.extract(many_ats);
         auto end = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 
@@ -2406,7 +2376,7 @@ public:
 
         // Test 2: Very long domain
         std::string long_domain = "user@" + std::string(500, 'a') + ".com";
-        result = scanner->extract(long_domain);
+        result = scanner.extract(long_domain);
         std::cout << "Long domain test: found " << result.size() << " emails\n";
         assert(result.empty()); // Should reject
 
@@ -2416,7 +2386,7 @@ public:
         {
             memory_bomb += "user" + std::to_string(i) + "@domain" + std::to_string(i) + ".com ";
         }
-        result = scanner->extract(memory_bomb);
+        result = scanner.extract(memory_bomb);
         std::cout << "Memory bomb test: found " << result.size() << " emails (capped)\n";
         assert(result.size() <= 5000); // Should be capped
 
@@ -2873,12 +2843,12 @@ int main()
 
         for (const auto &test : testCases)
         {
-            bool found = scanner->contains(test);
+            bool found = scanner.contains(test);
             std::cout << (found ? "SENSITIVE" : "CLEAN    ") << ": \"" << test << "\"" << std::endl;
 
             if (found)
             {
-                auto emails = scanner->extract(test);
+                auto emails = scanner.extract(test);
                 std::cout << "  => Found emails: ";
                 for (const auto &email : emails)
                 {
