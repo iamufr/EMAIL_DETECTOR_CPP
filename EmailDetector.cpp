@@ -948,6 +948,27 @@ private:
         bool didTrimDomain;
     };
 
+    struct OperationBatcher
+    {
+        size_t local_count = 0;
+        static constexpr size_t BATCH_SIZE = 1000;
+
+        inline void recordOperation(std::atomic<size_t> &counter) noexcept
+        {
+            if (++local_count >= BATCH_SIZE)
+            {
+                counter.fetch_add(BATCH_SIZE, std::memory_order_relaxed);
+                local_count = 0;
+            }
+        }
+
+        inline bool checkLimit(std::atomic<size_t> &counter, size_t max_ops) noexcept
+        {
+            recordOperation(counter);
+            return counter.load(std::memory_order_relaxed) > max_ops;
+        }
+    };
+
     [[nodiscard]] static FORCE_INLINE size_t findFirstAlnum(const char *data, size_t dataLen,
                                                             size_t pos, size_t limit) noexcept
     {
@@ -1000,22 +1021,23 @@ private:
 
     [[nodiscard]] static EmailBoundaries findEmailBoundaries(std::string_view text, size_t atPos,
                                                              size_t minScannedIndex,
-                                                             std::atomic<size_t> &opCounter) noexcept
+                                                             std::atomic<size_t> &opCounter,
+                                                             OperationBatcher &batcher) noexcept
     {
         const size_t len = text.length();
         const char *data = text.data();
 
-        if (opCounter.fetch_add(1, std::memory_order_relaxed) > MAX_TOTAL_OPERATIONS)
+        if (batcher.checkLimit(opCounter, MAX_TOTAL_OPERATIONS))
         {
             return {atPos, atPos, false, atPos, false};
         }
 
-        if (UNLIKELY(atPos >= len))
+        if (atPos >= len) [[unlikely]]
             return {atPos, atPos, false, atPos, false};
 
         size_t end = atPos + 1;
 
-        if (UNLIKELY(end < len && data[end] == '['))
+        if (end < len && data[end] == '[') [[unlikely]]
         {
             return {atPos, atPos, false, atPos + 1, false};
         }
@@ -1028,8 +1050,6 @@ private:
 
         while (end < len && CharacterClassifier::isDomainChar(static_cast<unsigned char>(data[end])))
         {
-            PRODUCTION_CHECK_BOUNDARIES(end < len, "findEmailBoundaries domain scan bounds", atPos);
-
             if (domain_chars >= MAX_DOMAIN_PART)
             {
                 end = atPos + 1 + MAX_DOMAIN_PART;
@@ -1053,7 +1073,8 @@ private:
             ++end;
             ++domain_chars;
 
-            if (opCounter.fetch_add(1, std::memory_order_relaxed) > MAX_TOTAL_OPERATIONS)
+            batcher.recordOperation(opCounter);
+            if (opCounter.load(std::memory_order_relaxed) > MAX_TOTAL_OPERATIONS) [[unlikely]]
             {
                 return {atPos, atPos, false, atPos, false};
             }
@@ -1088,7 +1109,8 @@ private:
                     --i;
                     ++quotesSeen;
 
-                    if (opCounter.fetch_add(1, std::memory_order_relaxed) > MAX_TOTAL_OPERATIONS)
+                    batcher.recordOperation(opCounter);
+                    if (opCounter.load(std::memory_order_relaxed) > MAX_TOTAL_OPERATIONS) [[unlikely]]
                     {
                         return {atPos, atPos, false, atPos, false};
                     }
@@ -1153,7 +1175,8 @@ private:
 
         while (start > effectiveMin && start > 0 && charsScanned < MAX_BACKWARD_SCAN_CHARS)
         {
-            if (opCounter.fetch_add(1, std::memory_order_relaxed) > MAX_TOTAL_OPERATIONS)
+            batcher.recordOperation(opCounter);
+            if (opCounter.load(std::memory_order_relaxed) > MAX_TOTAL_OPERATIONS) [[unlikely]]
             {
                 return {atPos, atPos, false, atPos, false};
             }
@@ -1192,7 +1215,8 @@ private:
                     {
                         PRODUCTION_CHECK_BOUNDARIES(lookback < len, "findEmailBoundaries lookback", atPos);
 
-                        if (opCounter.fetch_add(1, std::memory_order_relaxed) > MAX_TOTAL_OPERATIONS)
+                        batcher.recordOperation(opCounter);
+                        if (opCounter.load(std::memory_order_relaxed) > MAX_TOTAL_OPERATIONS) [[unlikely]]
                         {
                             return {atPos, atPos, false, atPos, false};
                         }
@@ -1482,13 +1506,15 @@ public:
             size_t lastConsumedEnd = 0;
 
             std::atomic<size_t> totalOps{0};
+            thread_local OperationBatcher batcher;
+            batcher.local_count = 0;
 
             static constexpr size_t MAX_TOTAL_CHARS_SCANNED = 1'000'000;
             size_t totalCharsScanned = 0;
 
             while (pos < len)
             {
-                if (totalOps.fetch_add(1, std::memory_order_relaxed) > MAX_TOTAL_OPERATIONS)
+                if (batcher.checkLimit(totalOps, MAX_TOTAL_OPERATIONS)) [[unlikely]]
                 {
                     stats_.recordError();
                     break;
@@ -1512,7 +1538,7 @@ public:
                     continue;
                 }
 
-                auto boundaries = findEmailBoundaries(text, atPos, minScannedIndex, totalOps);
+                auto boundaries = findEmailBoundaries(text, atPos, minScannedIndex, totalOps, batcher);
 
                 size_t charsScanned = 0;
                 size_t temp = 0;
@@ -1630,6 +1656,8 @@ public:
             size_t atSymbolsProcessed = 0;
 
             std::atomic<size_t> totalOps{0};
+            thread_local OperationBatcher batcher;
+            batcher.local_count = 0;
 
             static constexpr size_t MAX_SCAN_ITERATIONS = 100'000;
             size_t iterations = 0;
@@ -1639,7 +1667,7 @@ public:
 
             while (pos < len && iterations++ < MAX_SCAN_ITERATIONS)
             {
-                if (totalOps.fetch_add(1, std::memory_order_relaxed) > MAX_TOTAL_OPERATIONS)
+                if (batcher.checkLimit(totalOps, MAX_TOTAL_OPERATIONS)) [[unlikely]]
                 {
                     stats_.recordError();
                     break;
@@ -1673,7 +1701,7 @@ public:
                     continue;
                 }
 
-                auto boundaries = findEmailBoundaries(text, atPos, minScannedIndex, totalOps);
+                auto boundaries = findEmailBoundaries(text, atPos, minScannedIndex, totalOps, batcher);
 
                 size_t charsScanned = 0;
                 size_t temp = 0;
