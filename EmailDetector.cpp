@@ -828,28 +828,18 @@ private:
     static constexpr size_t MIN_EMAIL_SIZE = 5;
     static constexpr size_t MAX_EMAIL_SIZE = 320;
 
-    mutable ValidationStats stats_;
-
 public:
-    [[nodiscard]] bool isValid(std::string_view email) const noexcept
+    [[nodiscard]] static bool isValid(std::string_view email) noexcept
     {
-        stats_.recordValidation();
-
         try
         {
             const size_t len = email.length();
 
             if (UNLIKELY(len < MIN_EMAIL_SIZE || len > MAX_EMAIL_SIZE))
-            {
-                stats_.recordError();
                 return false;
-            }
 
             if (UNLIKELY(email.data() == nullptr))
-            {
-                stats_.recordError();
                 return false;
-            }
 
             size_t atPos = SIZE_MAX;
             bool inQuotes = false;
@@ -882,44 +872,68 @@ public:
                 if (c == '@' && !inQuotes)
                 {
                     if (UNLIKELY(atPos != SIZE_MAX))
-                    {
-                        stats_.recordError();
                         return false;
-                    }
                     atPos = i;
                 }
             }
 
             if (UNLIKELY(atPos == SIZE_MAX || atPos == 0 || atPos >= len - 1))
-            {
-                stats_.recordError();
                 return false;
-            }
 
-            bool result = LocalPartValidator::validate(email, 0, atPos,
-                                                       LocalPartValidator::ValidationMode::EXACT) &&
-                          DomainPartValidator::validate(email, atPos + 1, len);
-
-            if (!result)
-                stats_.recordError();
-
-            return result;
+            return LocalPartValidator::validate(email, 0, atPos,
+                                                LocalPartValidator::ValidationMode::EXACT) &&
+                   DomainPartValidator::validate(email, atPos + 1, len);
         }
         catch (...)
         {
-            stats_.recordError();
             return false;
         }
+    }
+};
+
+// ====================================================================================================
+// EMAIL VALIDATION SERVICE (With Statistics)
+// ====================================================================================================
+
+class EmailValidationService final
+{
+private:
+    ValidationStats stats_;
+
+public:
+    EmailValidationService() = default;
+
+    EmailValidationService(const EmailValidationService &) = delete;
+    EmailValidationService &operator=(const EmailValidationService &) = delete;
+
+    EmailValidationService(EmailValidationService &&) noexcept = default;
+    EmailValidationService &operator=(EmailValidationService &&) noexcept = default;
+
+    [[nodiscard]] bool validate(std::string_view email) noexcept
+    {
+        stats_.recordValidation();
+
+        bool result = EmailValidator::isValid(email);
+
+        if (!result)
+            stats_.recordError();
+
+        return result;
     }
 
     [[nodiscard]] const ValidationStats &getStats() const noexcept
     {
         return stats_;
     }
+
+    void resetStats() noexcept
+    {
+        stats_.reset();
+    }
 };
 
 // ====================================================================================================
-// EMAIL SCANNER WITH HEURISTIC EXTRACTION (Single Responsibility Principle)
+// EMAIL SCANNER WITH HEURISTIC EXTRACTION - STATELESS (Pure Functions)
 // ====================================================================================================
 
 class EmailScanner final
@@ -936,8 +950,6 @@ private:
     static constexpr size_t MAX_AT_SYMBOLS = 1000;
     static constexpr size_t MAX_SEEN_SET_SIZE = 5000;
     static constexpr size_t MAX_TOTAL_OPERATIONS = 100'000'000;
-
-    mutable ValidationStats stats_;
 
     struct EmailBoundaries
     {
@@ -1480,25 +1492,17 @@ private:
     }
 
 public:
-    [[nodiscard]] bool contains(std::string_view text) const noexcept
+    [[nodiscard]] static bool contains(std::string_view text) noexcept
     {
-        stats_.recordScan();
-
         try
         {
             const size_t len = text.length();
 
             if (UNLIKELY(len > MAX_INPUT_SIZE || len < 5))
-            {
-                stats_.recordError();
                 return false;
-            }
 
             if (UNLIKELY(text.data() == nullptr && len > 0))
-            {
-                stats_.recordError();
                 return false;
-            }
 
             const char *data = text.data();
             size_t pos = 0;
@@ -1506,7 +1510,7 @@ public:
             size_t lastConsumedEnd = 0;
 
             std::atomic<size_t> totalOps{0};
-            thread_local OperationBatcher batcher;
+            OperationBatcher batcher;
             batcher.local_count = 0;
 
             static constexpr size_t MAX_TOTAL_CHARS_SCANNED = 1'000'000;
@@ -1515,10 +1519,7 @@ public:
             while (pos < len)
             {
                 if (batcher.checkLimit(totalOps, MAX_TOTAL_OPERATIONS)) [[unlikely]]
-                {
-                    stats_.recordError();
                     break;
-                }
 
                 auto atPosOpt = safe_memchr_index(data, pos, len, '@');
                 if (!atPosOpt)
@@ -1545,10 +1546,7 @@ public:
 
                 if (!safe_add(safe_subtract(atPos, boundaries.start),
                               safe_subtract(boundaries.end, atPos), temp))
-                {
-                    stats_.recordError();
                     break;
-                }
 
                 charsScanned = temp;
 
@@ -1559,16 +1557,10 @@ public:
                 }
 
                 if (!safe_add(totalCharsScanned, charsScanned, totalCharsScanned))
-                {
-                    stats_.recordError();
                     break;
-                }
 
                 if (totalCharsScanned > MAX_TOTAL_CHARS_SCANNED)
-                {
-                    stats_.recordError();
                     break;
-                }
 
                 if (!boundaries.validBoundaries)
                 {
@@ -1604,14 +1596,12 @@ public:
         }
         catch (...)
         {
-            stats_.recordError();
             return false;
         }
     }
 
-    [[nodiscard]] std::vector<std::string> extract(std::string_view text) const noexcept
+    [[nodiscard]] static std::vector<std::string> extract(std::string_view text) noexcept
     {
-        stats_.recordExtract();
         std::vector<std::string> emails;
 
         try
@@ -1619,16 +1609,10 @@ public:
             const size_t len = text.length();
 
             if (UNLIKELY(len > MAX_INPUT_SIZE || len < 5))
-            {
-                stats_.recordError();
                 return emails;
-            }
 
             if (UNLIKELY(text.data() == nullptr && len > 0))
-            {
-                stats_.recordError();
                 return emails;
-            }
 
             size_t initial_reserve = std::min({MAX_INITIAL_RESERVE,
                                                len / 30,
@@ -1656,7 +1640,7 @@ public:
             size_t atSymbolsProcessed = 0;
 
             std::atomic<size_t> totalOps{0};
-            thread_local OperationBatcher batcher;
+            OperationBatcher batcher;
             batcher.local_count = 0;
 
             static constexpr size_t MAX_SCAN_ITERATIONS = 100'000;
@@ -1668,19 +1652,13 @@ public:
             while (pos < len && iterations++ < MAX_SCAN_ITERATIONS)
             {
                 if (batcher.checkLimit(totalOps, MAX_TOTAL_OPERATIONS)) [[unlikely]]
-                {
-                    stats_.recordError();
                     break;
-                }
 
                 if (UNLIKELY(extractedCount >= MAX_EMAILS_EXTRACT))
                     break;
 
                 if (UNLIKELY(atSymbolsProcessed >= MAX_AT_SYMBOLS))
-                {
-                    stats_.recordError();
                     break;
-                }
 
                 auto atPosOpt = safe_memchr_index(data, pos, len, '@');
                 if (!atPosOpt)
@@ -1708,10 +1686,7 @@ public:
 
                 if (!safe_add(safe_subtract(atPos, boundaries.start),
                               safe_subtract(boundaries.end, atPos), temp))
-                {
-                    stats_.recordError();
                     break;
-                }
 
                 charsScanned = temp;
 
@@ -1722,16 +1697,10 @@ public:
                 }
 
                 if (!safe_add(totalCharsScanned, charsScanned, totalCharsScanned))
-                {
-                    stats_.recordError();
                     break;
-                }
 
                 if (totalCharsScanned > MAX_TOTAL_CHARS_SCANNED)
-                {
-                    stats_.recordError();
                     break;
-                }
 
                 if (!boundaries.validBoundaries)
                 {
@@ -1771,16 +1740,10 @@ public:
 
                     if (!safe_add(estimatedMemory, emailMemory, newMemory) ||
                         newMemory > MAX_MEMORY_BUDGET)
-                    {
-                        stats_.recordError();
                         break;
-                    }
 
                     if (seen.size() >= MAX_SEEN_SET_SIZE)
-                    {
-                        stats_.recordError();
                         break;
-                    }
 
                     if (emails.size() >= emails.capacity())
                     {
@@ -1789,10 +1752,7 @@ public:
 
                         if (!safe_add(newMemory, additional_memory, newMemory) ||
                             newMemory > MAX_MEMORY_BUDGET)
-                        {
-                            stats_.recordError();
                             break;
-                        }
 
                         emails.reserve(new_capacity);
                     }
@@ -1810,7 +1770,6 @@ public:
                         catch (...)
                         {
                             seen.erase(it);
-                            stats_.recordError();
                             break;
                         }
                     }
@@ -1853,26 +1812,71 @@ public:
         }
         catch (const std::bad_alloc &)
         {
-            stats_.recordError();
             emails.clear();
         }
         catch (const std::length_error &)
         {
-            stats_.recordError();
             emails.clear();
         }
         catch (...)
         {
-            stats_.recordError();
             emails.clear();
         }
 
         return emails;
     }
+};
+
+// ====================================================================================================
+// EMAIL SCANNER SERVICE (With Statistics)
+// ====================================================================================================
+
+class EmailScannerService final
+{
+private:
+    ValidationStats stats_;
+
+public:
+    EmailScannerService() = default;
+
+    EmailScannerService(const EmailScannerService &) = delete;
+    EmailScannerService &operator=(const EmailScannerService &) = delete;
+
+    EmailScannerService(EmailScannerService &&) noexcept = default;
+    EmailScannerService &operator=(EmailScannerService &&) noexcept = default;
+
+    [[nodiscard]] bool contains(std::string_view text) noexcept
+    {
+        stats_.recordScan();
+
+        bool result = EmailScanner::contains(text);
+
+        if (!result)
+            stats_.recordError();
+
+        return result;
+    }
+
+    [[nodiscard]] std::vector<std::string> extract(std::string_view text) noexcept
+    {
+        stats_.recordExtract();
+
+        auto result = EmailScanner::extract(text);
+
+        if (result.empty())
+            stats_.recordError();
+
+        return result;
+    }
 
     [[nodiscard]] const ValidationStats &getStats() const noexcept
     {
         return stats_;
+    }
+
+    void resetStats() noexcept
+    {
+        stats_.reset();
     }
 };
 
@@ -1880,31 +1884,31 @@ public:
 // FACTORY (Dependency Inversion Principle)
 // ====================================================================================================
 
-class EmailValidatorFactory
+class EmailServiceFactory
 {
 public:
-    // Return by value (copy/move - cheap for stateless objects)
-    [[nodiscard]] static EmailValidator createValidator()
+    // Create service instances with independent statistics
+    [[nodiscard]] static EmailValidationService createValidationService()
     {
-        return EmailValidator{}; // Direct construction, no heap allocation
+        return EmailValidationService{};
     }
 
-    [[nodiscard]] static EmailScanner createScanner()
+    [[nodiscard]] static EmailScannerService createScannerService()
     {
-        return EmailScanner{}; // Direct construction, no heap allocation
+        return EmailScannerService{};
     }
 
-    // Return reference to thread-local instance (zero overhead)
-    [[nodiscard]] static EmailValidator &getValidator()
+    // Get thread-local service instances (for convenience)
+    [[nodiscard]] static EmailValidationService &getThreadLocalValidationService()
     {
-        thread_local EmailValidator instance;
-        return instance; // Direct type, no interface
+        thread_local EmailValidationService instance;
+        return instance;
     }
 
-    [[nodiscard]] static EmailScanner &getScanner()
+    [[nodiscard]] static EmailScannerService &getThreadLocalScannerService()
     {
-        thread_local EmailScanner instance;
-        return instance; // Direct type, no interface
+        thread_local EmailScannerService instance;
+        return instance;
     }
 };
 
@@ -1924,7 +1928,7 @@ public:
         std::cout << "Full RFC 5322 compliance with quoted strings, IP literals, etc.\n"
                   << std::endl;
 
-        auto validator = EmailValidatorFactory::createValidator();
+        EmailValidationService validator;
 
         struct TestCase
         {
@@ -2061,7 +2065,7 @@ public:
         int passed = 0;
         for (const auto &test : tests)
         {
-            bool result = validator.isValid(test.input);
+            bool result = validator.validate(test.input);
             bool testPassed = (result == test.expected);
 
             std::cout << (testPassed ? "✓" : "✗") << " "
@@ -2093,7 +2097,7 @@ public:
         std::cout << "Conservative validation for PII detection\n"
                   << std::endl;
 
-        auto scanner = EmailValidatorFactory::createScanner();
+        EmailScannerService scanner;
 
         struct TestCase
         {
@@ -2524,7 +2528,7 @@ public:
     {
         std::cout << "\n=== ADVERSARIAL INPUT TESTS ===\n";
 
-        auto scanner = EmailValidatorFactory::createScanner();
+        EmailScannerService scanner;
 
         // Test 1: Many @ symbols
         std::string many_ats(10000, '@');
@@ -2913,8 +2917,8 @@ int main()
         std::cout << "Testing both exact validation and text scanning\n"
                   << std::endl;
 
-        auto validator = EmailValidatorFactory::createValidator();
-        auto scanner = EmailValidatorFactory::createScanner();
+        EmailValidationService validator;
+        EmailScannerService scanner;
 
         std::vector<std::string> testCases = {
             "Simple email: user@example.com in text",
