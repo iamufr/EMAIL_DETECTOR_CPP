@@ -951,7 +951,7 @@ private:
     struct OperationBatcher
     {
         size_t local_count = 0;
-        static constexpr size_t BATCH_SIZE = 3000;
+        static constexpr size_t BATCH_SIZE = 1000;
 
         inline void recordOperation(std::atomic<size_t> &counter) noexcept
         {
@@ -1047,7 +1047,6 @@ private:
         size_t domain_chars = 0;
         bool didTrimDomain = false;
         size_t current_label_length = 0;
-        size_t check_counter = 0;
 
         while (end < len && CharacterClassifier::isDomainChar(static_cast<unsigned char>(data[end])))
         {
@@ -1074,14 +1073,10 @@ private:
             ++end;
             ++domain_chars;
 
-            if (++check_counter >= 100)
+            batcher.recordOperation(opCounter);
+            if (opCounter.load(std::memory_order_relaxed) > MAX_TOTAL_OPERATIONS) [[unlikely]]
             {
-                batcher.recordOperation(opCounter);
-                if (opCounter.load(std::memory_order_relaxed) > MAX_TOTAL_OPERATIONS) [[unlikely]]
-                {
-                    return {atPos, atPos, false, atPos, false};
-                }
-                check_counter = 0;
+                return {atPos, atPos, false, atPos, false};
             }
         }
 
@@ -1178,17 +1173,12 @@ private:
         bool didTrim = false;
         size_t charsScanned = 0;
 
-        check_counter = 0;
         while (start > effectiveMin && start > 0 && charsScanned < MAX_BACKWARD_SCAN_CHARS)
         {
-            if (++check_counter >= 50)
+            batcher.recordOperation(opCounter);
+            if (opCounter.load(std::memory_order_relaxed) > MAX_TOTAL_OPERATIONS) [[unlikely]]
             {
-                batcher.recordOperation(opCounter);
-                if (opCounter.load(std::memory_order_relaxed) > MAX_TOTAL_OPERATIONS) [[unlikely]]
-                {
-                    return {atPos, atPos, false, atPos, false};
-                }
-                check_counter = 0;
+                return {atPos, atPos, false, atPos, false};
             }
 
             PRODUCTION_CHECK_BOUNDARIES(start > 0, "findEmailBoundaries backward scan start > 0", atPos);
