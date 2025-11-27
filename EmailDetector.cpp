@@ -25,9 +25,11 @@
 #if defined(__GNUC__) || defined(__clang__)
 #define LIKELY(x) __builtin_expect(!!(x), 1)
 #define UNLIKELY(x) __builtin_expect(!!(x), 0)
+#define RESTRICT __restrict__
 #else
 #define LIKELY(x) (x)
 #define UNLIKELY(x) (x)
+#define RESTRICT
 #endif
 
 #if defined(_MSC_VER)
@@ -38,157 +40,156 @@
 #define FORCE_INLINE inline
 #endif
 
+// Sanitizer annotations for better debugging
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define ASAN_ENABLED 1
+#endif
+#if __has_feature(thread_sanitizer)
+#define TSAN_ENABLED 1
+#endif
+#endif
+
 // ====================================================================================================
-// ERROR TRACKING
+// SAFE ARITHMETIC UTILITIES (Overflow-Safe)
 // ====================================================================================================
 
-class ThreadSafeErrorCounter
+namespace SafeArithmetic
+{
+
+    [[nodiscard]] constexpr bool add(size_t a, size_t b, size_t &result) noexcept
+    {
+        if (a > SIZE_MAX - b)
+        {
+            result = SIZE_MAX;
+            return false;
+        }
+        result = a + b;
+        return true;
+    }
+
+    [[nodiscard]] constexpr bool subtract(size_t a, size_t b, size_t &result) noexcept
+    {
+        if (a < b)
+        {
+            result = 0;
+            return false;
+        }
+        result = a - b;
+        return true;
+    }
+
+    [[nodiscard]] constexpr bool multiply(size_t a, size_t b, size_t &result) noexcept
+    {
+        if (b != 0 && a > SIZE_MAX / b)
+        {
+            result = SIZE_MAX;
+            return false;
+        }
+        result = a * b;
+        return true;
+    }
+
+    [[nodiscard]] constexpr size_t saturating_add(size_t a, size_t b) noexcept
+    {
+        return (a > SIZE_MAX - b) ? SIZE_MAX : (a + b);
+    }
+
+    [[nodiscard]] constexpr size_t saturating_subtract(size_t a, size_t b) noexcept
+    {
+        return (a > b) ? (a - b) : 0;
+    }
+
+} // namespace SafeArithmetic
+
+// ====================================================================================================
+// ERROR TRACKING (Thread-Safe with Acquire-Release Semantics)
+// ====================================================================================================
+
+class ThreadSafeErrorCounter final
 {
 private:
-    static std::atomic<uint64_t> &getCounter()
-    {
-        static std::atomic<uint64_t> counter{0};
-        return counter;
-    }
+    std::atomic<uint64_t> counter_{0};
 
 public:
-    static void recordError() noexcept
+    ThreadSafeErrorCounter() noexcept = default;
+
+    // Non-copyable, non-movable for safety
+    ThreadSafeErrorCounter(const ThreadSafeErrorCounter &) = delete;
+    ThreadSafeErrorCounter &operator=(const ThreadSafeErrorCounter &) = delete;
+    ThreadSafeErrorCounter(ThreadSafeErrorCounter &&) = delete;
+    ThreadSafeErrorCounter &operator=(ThreadSafeErrorCounter &&) = delete;
+
+    void recordError() noexcept
     {
-        getCounter().fetch_add(1, std::memory_order_relaxed);
+        counter_.fetch_add(1, std::memory_order_acq_rel);
     }
 
-    static uint64_t getCount() noexcept
+    [[nodiscard]] uint64_t getCount() const noexcept
     {
-        return getCounter().load(std::memory_order_relaxed);
+        return counter_.load(std::memory_order_acquire);
     }
 
-    static void reset() noexcept
+    void reset() noexcept
     {
-        getCounter().store(0, std::memory_order_relaxed);
+        counter_.store(0, std::memory_order_release);
+    }
+
+    // Global instance accessor (thread-safe initialization)
+    [[nodiscard]] static ThreadSafeErrorCounter &global() noexcept
+    {
+        static ThreadSafeErrorCounter instance;
+        return instance;
     }
 };
 
 // ====================================================================================================
-// MACROS
+// PRODUCTION SAFETY MACROS
 // ====================================================================================================
 
-[[nodiscard]] constexpr size_t safe_subtract(size_t a, size_t b) noexcept
-{
-    return (a > b) ? (a - b) : 0;
-}
-
-[[nodiscard]] constexpr bool safe_add(size_t a, size_t b, size_t &result) noexcept
-{
-    if (a > SIZE_MAX - b)
-        return false;
-    result = a + b;
-    return true;
-}
-
-// silently fails and records error
-#define PRODUCTION_CHECK_BOOL(condition, message)  \
-    do                                             \
-    {                                              \
-        const bool cond_result = !!(condition);    \
-        if (UNLIKELY(!cond_result))                \
-        {                                          \
-            ThreadSafeErrorCounter::recordError(); \
-            return false;                          \
-        }                                          \
+#define PRODUCTION_CHECK_BOOL(condition, message)           \
+    do                                                      \
+    {                                                       \
+        if (UNLIKELY(!(condition)))                         \
+        {                                                   \
+            ThreadSafeErrorCounter::global().recordError(); \
+            return false;                                   \
+        }                                                   \
     } while (0)
 
-// Specialized macro for EmailBoundaries return type
 #define PRODUCTION_CHECK_BOUNDARIES(condition, message, atPos) \
     do                                                         \
     {                                                          \
-        const bool cond_result = !!(condition);                \
-        if (UNLIKELY(!cond_result))                            \
+        if (UNLIKELY(!(condition)))                            \
         {                                                      \
-            ThreadSafeErrorCounter::recordError();             \
+            ThreadSafeErrorCounter::global().recordError();    \
             return {atPos, atPos, false, atPos, false};        \
         }                                                      \
     } while (0)
 
 #ifndef NDEBUG
-#define DEBUG_ASSERT(condition, message)        \
-    do                                          \
-    {                                           \
-        const bool cond_result = !!(condition); \
-        if (!cond_result)                       \
-        {                                       \
-            assert(cond_result);                \
-        }                                       \
-    } while (0)
+#define DEBUG_ASSERT(condition, message) assert((condition) && (message))
 #else
 #define DEBUG_ASSERT(condition, message) ((void)0)
 #endif
 
-#define BOUNDS_CHECK(index, size)                                    \
-    do                                                               \
-    {                                                                \
-        if (UNLIKELY((index) >= (size)))                             \
-        {                                                            \
-            throw std::out_of_range("Index out of bounds: " +        \
-                                    std::to_string(index) + " >= " + \
-                                    std::to_string(size));           \
-        }                                                            \
-    } while (0)
-
 // ====================================================================================================
-// STATISTICS TRACKER
+// STATISTICS TRACKER (Thread-Safe with Consistent Snapshots)
 // ====================================================================================================
 
-class ValidationStats
+class ValidationStats final
 {
 private:
-    mutable std::atomic<uint64_t> validationCount{0};
-    mutable std::atomic<uint64_t> scanCount{0};
-    mutable std::atomic<uint64_t> extractCount{0};
-    mutable std::atomic<uint64_t> errorCount{0};
+    // Aligned for cache efficiency
+    alignas(64) std::atomic<uint64_t> validationCount_{0};
+    alignas(64) std::atomic<uint64_t> scanCount_{0};
+    alignas(64) std::atomic<uint64_t> extractCount_{0};
+    alignas(64) std::atomic<uint64_t> errorCount_{0};
+
+    // Mutex for consistent snapshots
+    mutable std::shared_mutex snapshotMutex_;
 
 public:
-    void recordValidation() noexcept
-    {
-        validationCount.fetch_add(1, std::memory_order_relaxed);
-    }
-    void recordScan() noexcept
-    {
-        scanCount.fetch_add(1, std::memory_order_relaxed);
-    }
-    void recordExtract() noexcept
-    {
-        extractCount.fetch_add(1, std::memory_order_relaxed);
-    }
-    void recordError() noexcept
-    {
-        errorCount.fetch_add(1, std::memory_order_relaxed);
-    }
-
-    [[nodiscard]] uint64_t getValidationCount() const noexcept
-    {
-        return validationCount.load(std::memory_order_relaxed);
-    }
-    [[nodiscard]] uint64_t getScanCount() const noexcept
-    {
-        return scanCount.load(std::memory_order_relaxed);
-    }
-    [[nodiscard]] uint64_t getExtractCount() const noexcept
-    {
-        return extractCount.load(std::memory_order_relaxed);
-    }
-    [[nodiscard]] uint64_t getErrorCount() const noexcept
-    {
-        return errorCount.load(std::memory_order_relaxed);
-    }
-
-    void reset() noexcept
-    {
-        validationCount.store(0, std::memory_order_relaxed);
-        scanCount.store(0, std::memory_order_relaxed);
-        extractCount.store(0, std::memory_order_relaxed);
-        errorCount.store(0, std::memory_order_relaxed);
-    }
-
     struct StatsSnapshot
     {
         uint64_t validations;
@@ -199,7 +200,7 @@ public:
         [[nodiscard]] double getErrorRate() const noexcept
         {
             return validations > 0
-                       ? static_cast<double>(errors) / validations
+                       ? static_cast<double>(errors) / static_cast<double>(validations)
                        : 0.0;
         }
 
@@ -214,21 +215,110 @@ public:
         }
     };
 
+    ValidationStats() noexcept = default;
+
+    // Non-copyable but movable
+    ValidationStats(const ValidationStats &) = delete;
+    ValidationStats &operator=(const ValidationStats &) = delete;
+
+    ValidationStats(ValidationStats &&other) noexcept
+    {
+        auto snapshot = other.getSnapshot();
+        validationCount_.store(snapshot.validations, std::memory_order_relaxed);
+        scanCount_.store(snapshot.scans, std::memory_order_relaxed);
+        extractCount_.store(snapshot.extracts, std::memory_order_relaxed);
+        errorCount_.store(snapshot.errors, std::memory_order_relaxed);
+    }
+
+    ValidationStats &operator=(ValidationStats &&other) noexcept
+    {
+        if (this != &other)
+        {
+            auto snapshot = other.getSnapshot();
+            validationCount_.store(snapshot.validations, std::memory_order_relaxed);
+            scanCount_.store(snapshot.scans, std::memory_order_relaxed);
+            extractCount_.store(snapshot.extracts, std::memory_order_relaxed);
+            errorCount_.store(snapshot.errors, std::memory_order_relaxed);
+        }
+        return *this;
+    }
+
+    void recordValidation() noexcept
+    {
+        validationCount_.fetch_add(1, std::memory_order_acq_rel);
+    }
+
+    void recordScan() noexcept
+    {
+        scanCount_.fetch_add(1, std::memory_order_acq_rel);
+    }
+
+    void recordExtract() noexcept
+    {
+        extractCount_.fetch_add(1, std::memory_order_acq_rel);
+    }
+
+    void recordError() noexcept
+    {
+        errorCount_.fetch_add(1, std::memory_order_acq_rel);
+    }
+
+    [[nodiscard]] uint64_t getValidationCount() const noexcept
+    {
+        return validationCount_.load(std::memory_order_acquire);
+    }
+
+    [[nodiscard]] uint64_t getScanCount() const noexcept
+    {
+        return scanCount_.load(std::memory_order_acquire);
+    }
+
+    [[nodiscard]] uint64_t getExtractCount() const noexcept
+    {
+        return extractCount_.load(std::memory_order_acquire);
+    }
+
+    [[nodiscard]] uint64_t getErrorCount() const noexcept
+    {
+        return errorCount_.load(std::memory_order_acquire);
+    }
+
+    void reset() noexcept
+    {
+        std::unique_lock lock(snapshotMutex_);
+        validationCount_.store(0, std::memory_order_release);
+        scanCount_.store(0, std::memory_order_release);
+        extractCount_.store(0, std::memory_order_release);
+        errorCount_.store(0, std::memory_order_release);
+    }
+
+    // Consistent snapshot - all values from the same point in time
     [[nodiscard]] StatsSnapshot getSnapshot() const noexcept
     {
+        std::shared_lock lock(snapshotMutex_);
         return {
-            validationCount.load(std::memory_order_relaxed),
-            scanCount.load(std::memory_order_relaxed),
-            extractCount.load(std::memory_order_relaxed),
-            errorCount.load(std::memory_order_relaxed)};
+            validationCount_.load(std::memory_order_acquire),
+            scanCount_.load(std::memory_order_acquire),
+            extractCount_.load(std::memory_order_acquire),
+            errorCount_.load(std::memory_order_acquire)};
+    }
+
+    // Relaxed snapshot - faster but may be inconsistent
+    [[nodiscard]] StatsSnapshot getRelaxedSnapshot() const noexcept
+    {
+        return {
+            validationCount_.load(std::memory_order_relaxed),
+            scanCount_.load(std::memory_order_relaxed),
+            extractCount_.load(std::memory_order_relaxed),
+            errorCount_.load(std::memory_order_relaxed)};
     }
 };
 
 // ====================================================================================================
-// CHARACTER CLASSIFICATION (Lookup Tables) (Single Responsibility Principle)
+// CHARACTER CLASSIFICATION (Lookup Tables - Completely Thread-Safe, Read-Only)
 // ====================================================================================================
 
-class CharacterClassifier
+class CharacterClassifier final
 {
 private:
     static constexpr unsigned char CHAR_ALPHA = 0x01;
@@ -240,113 +330,187 @@ private:
     static constexpr unsigned char CHAR_INVALID_LOCAL = 0x40;
     static constexpr unsigned char CHAR_BOUNDARY = 0x80;
 
-    inline static constexpr unsigned char charTable[256] = {
-        // 0-31: control characters
-        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0xC0, 0xC0, 0x40, 0x40, 0xC0, 0x40, 0x40,
-        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
-        // 32-47: space and symbols
-        0xC0, 0x04, 0x60, 0x04, 0x04, 0x04, 0x04, 0x24, 0xC0, 0xC0, 0x04, 0x04, 0xC0, 0x14, 0x14, 0x04,
-        // 48-63: digits and more symbols
-        0x1A, 0x1A, 0x1A, 0x1A, 0x1A, 0x1A, 0x1A, 0x1A, 0x1A, 0x1A, 0xC0, 0xC0, 0xC0, 0x04, 0xC0, 0x04,
-        // 64-79: @ and uppercase letters
-        0x40, 0x19, 0x19, 0x19, 0x19, 0x19, 0x19, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
-        // 80-95: more uppercase and symbols
-        0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0xC0, 0x40, 0xC0, 0x04, 0x04,
-        // 96-111: backtick and lowercase letters
-        0x24, 0x19, 0x19, 0x19, 0x19, 0x19, 0x19, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
-        // 112-127: more lowercase and symbols
-        0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x04, 0x04, 0x04, 0x04, 0x40,
-        // 128-255: extended ASCII (invalid)
-        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
-        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
-        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
-        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
-        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
-        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
-        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
-        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40};
+    // Immutable lookup table - thread-safe by design
+    static constexpr std::array<unsigned char, 256> charTable = []() constexpr
+    {
+        std::array<unsigned char, 256> table{};
+
+        // Control characters (0-31)
+        for (int i = 0; i < 32; ++i)
+        {
+            table[i] = CHAR_INVALID_LOCAL;
+        }
+        // Whitespace as boundaries
+        table[9] = CHAR_INVALID_LOCAL | CHAR_BOUNDARY;  // Tab
+        table[10] = CHAR_INVALID_LOCAL | CHAR_BOUNDARY; // LF
+        table[13] = CHAR_INVALID_LOCAL | CHAR_BOUNDARY; // CR
+
+        // Printable ASCII
+        table[32] = CHAR_INVALID_LOCAL | CHAR_BOUNDARY; // Space
+        table[33] = CHAR_ATEXT_SPECIAL;                 // !
+        table[34] = CHAR_QUOTE | CHAR_INVALID_LOCAL;    // "
+        table[35] = CHAR_ATEXT_SPECIAL;                 // #
+        table[36] = CHAR_ATEXT_SPECIAL;                 // $
+        table[37] = CHAR_ATEXT_SPECIAL;                 // %
+        table[38] = CHAR_ATEXT_SPECIAL;                 // &
+        table[39] = CHAR_ATEXT_SPECIAL | CHAR_QUOTE;    // '
+        table[40] = CHAR_INVALID_LOCAL | CHAR_BOUNDARY; // (
+        table[41] = CHAR_INVALID_LOCAL | CHAR_BOUNDARY; // )
+        table[42] = CHAR_ATEXT_SPECIAL;                 // *
+        table[43] = CHAR_ATEXT_SPECIAL;                 // +
+        table[44] = CHAR_INVALID_LOCAL | CHAR_BOUNDARY; // ,
+        table[45] = CHAR_ATEXT_SPECIAL | CHAR_DOMAIN;   // -
+        table[46] = CHAR_DOMAIN;                        // .
+        table[47] = CHAR_ATEXT_SPECIAL;                 // /
+
+        // Digits 0-9
+        for (int i = 48; i <= 57; ++i)
+        {
+            table[i] = CHAR_ALPHA | CHAR_DIGIT | CHAR_HEX | CHAR_DOMAIN;
+        }
+
+        table[58] = CHAR_INVALID_LOCAL | CHAR_BOUNDARY; // :
+        table[59] = CHAR_INVALID_LOCAL | CHAR_BOUNDARY; // ;
+        table[60] = CHAR_INVALID_LOCAL | CHAR_BOUNDARY; // <
+        table[61] = CHAR_ATEXT_SPECIAL;                 // =
+        table[62] = CHAR_INVALID_LOCAL | CHAR_BOUNDARY; // >
+        table[63] = CHAR_ATEXT_SPECIAL;                 // ?
+        table[64] = CHAR_INVALID_LOCAL;                 // @
+
+        // Uppercase A-F (hex)
+        for (int i = 65; i <= 70; ++i)
+        {
+            table[i] = CHAR_ALPHA | CHAR_HEX | CHAR_DOMAIN;
+        }
+        // Uppercase G-Z
+        for (int i = 71; i <= 90; ++i)
+        {
+            table[i] = CHAR_ALPHA | CHAR_DOMAIN;
+        }
+
+        table[91] = CHAR_INVALID_LOCAL | CHAR_BOUNDARY; // [
+        table[92] = CHAR_INVALID_LOCAL;                 // backslash
+        table[93] = CHAR_INVALID_LOCAL | CHAR_BOUNDARY; // ]
+        table[94] = CHAR_ATEXT_SPECIAL;                 // ^
+        table[95] = CHAR_ATEXT_SPECIAL;                 // _
+        table[96] = CHAR_ATEXT_SPECIAL | CHAR_QUOTE;    // `
+
+        // Lowercase a-f (hex)
+        for (int i = 97; i <= 102; ++i)
+        {
+            table[i] = CHAR_ALPHA | CHAR_HEX | CHAR_DOMAIN;
+        }
+        // Lowercase g-z
+        for (int i = 103; i <= 122; ++i)
+        {
+            table[i] = CHAR_ALPHA | CHAR_DOMAIN;
+        }
+
+        table[123] = CHAR_ATEXT_SPECIAL; // {
+        table[124] = CHAR_ATEXT_SPECIAL; // |
+        table[125] = CHAR_ATEXT_SPECIAL; // }
+        table[126] = CHAR_ATEXT_SPECIAL; // ~
+        table[127] = CHAR_INVALID_LOCAL; // DEL
+
+        // Extended ASCII (128-255) - all invalid
+        for (int i = 128; i < 256; ++i)
+        {
+            table[i] = CHAR_INVALID_LOCAL;
+        }
+
+        return table;
+    }();
 
 public:
-    [[nodiscard]] static FORCE_INLINE bool isAlpha(unsigned char c) noexcept
+    // Deleted constructors - static-only class
+    CharacterClassifier() = delete;
+    ~CharacterClassifier() = delete;
+
+    [[nodiscard]] static FORCE_INLINE constexpr bool isAlpha(unsigned char c) noexcept
     {
         return (charTable[c] & CHAR_ALPHA) != 0;
     }
 
-    [[nodiscard]] static FORCE_INLINE bool isDigit(unsigned char c) noexcept
+    [[nodiscard]] static FORCE_INLINE constexpr bool isDigit(unsigned char c) noexcept
     {
         return (charTable[c] & CHAR_DIGIT) != 0;
     }
 
-    [[nodiscard]] static FORCE_INLINE bool isAlphaNum(unsigned char c) noexcept
+    [[nodiscard]] static FORCE_INLINE constexpr bool isAlphaNum(unsigned char c) noexcept
     {
         return (charTable[c] & (CHAR_ALPHA | CHAR_DIGIT)) != 0;
     }
 
-    [[nodiscard]] static FORCE_INLINE bool isHexDigit(unsigned char c) noexcept
+    [[nodiscard]] static FORCE_INLINE constexpr bool isHexDigit(unsigned char c) noexcept
     {
         return (charTable[c] & CHAR_HEX) != 0;
     }
 
-    [[nodiscard]] static FORCE_INLINE bool isAtext(unsigned char c) noexcept
+    [[nodiscard]] static FORCE_INLINE constexpr bool isAtext(unsigned char c) noexcept
     {
         return (charTable[c] & (CHAR_ALPHA | CHAR_DIGIT | CHAR_ATEXT_SPECIAL)) != 0;
     }
 
-    [[nodiscard]] static FORCE_INLINE bool isDomainChar(unsigned char c) noexcept
+    [[nodiscard]] static FORCE_INLINE constexpr bool isDomainChar(unsigned char c) noexcept
     {
         return (charTable[c] & CHAR_DOMAIN) != 0;
     }
 
-    [[nodiscard]] static FORCE_INLINE bool isScanBoundary(unsigned char c) noexcept
+    [[nodiscard]] static FORCE_INLINE constexpr bool isScanBoundary(unsigned char c) noexcept
     {
         return (charTable[c] & CHAR_BOUNDARY) != 0;
     }
 
-    [[nodiscard]] static FORCE_INLINE bool isScanRightBoundary(unsigned char c) noexcept
+    [[nodiscard]] static FORCE_INLINE constexpr bool isScanRightBoundary(unsigned char c) noexcept
     {
         return (charTable[c] & CHAR_BOUNDARY) != 0 || c == '.' || c == '!' || c == '?';
     }
 
-    [[nodiscard]] static FORCE_INLINE bool isInvalidLocalChar(unsigned char c) noexcept
+    [[nodiscard]] static FORCE_INLINE constexpr bool isInvalidLocalChar(unsigned char c) noexcept
     {
         return (charTable[c] & CHAR_INVALID_LOCAL) != 0;
     }
 
-    [[nodiscard]] static FORCE_INLINE bool isQuoteChar(unsigned char c) noexcept
+    [[nodiscard]] static FORCE_INLINE constexpr bool isQuoteChar(unsigned char c) noexcept
     {
         return (charTable[c] & CHAR_QUOTE) != 0;
     }
 
-    [[nodiscard]] static FORCE_INLINE bool isQtextOrQpair(unsigned char c) noexcept
+    [[nodiscard]] static FORCE_INLINE constexpr bool isQtextOrQpair(unsigned char c) noexcept
     {
         return c >= 33 && c <= 126 && c != '\\' && c != '"';
     }
 };
 
 // ====================================================================================================
-// LOCAL PART VALIDATOR (Single Responsibility Principle)
+// LOCAL PART VALIDATOR (Stateless - Thread-Safe)
 // ====================================================================================================
 
-class LocalPartValidator
+class LocalPartValidator final
 {
 private:
     static constexpr size_t MAX_LOCAL_PART = 64;
 
-    [[nodiscard]] static FORCE_INLINE bool validateDotAtom(std::string_view text, size_t start, size_t end) noexcept
+    [[nodiscard]] static bool validateDotAtom(
+        const char *RESTRICT data,
+        size_t len,
+        size_t start,
+        size_t end) noexcept
     {
-        if (UNLIKELY(start >= end || end > text.length() || (end - start) > MAX_LOCAL_PART))
+        if (UNLIKELY(start >= end || end > len))
             return false;
 
-        PRODUCTION_CHECK_BOOL(start < text.length() && end <= text.length(), "validateDotAtom bounds");
+        const size_t partLen = end - start;
+        if (UNLIKELY(partLen > MAX_LOCAL_PART))
+            return false;
 
-        if (UNLIKELY(text[start] == '.' || text[end - 1] == '.'))
+        if (UNLIKELY(data[start] == '.' || data[end - 1] == '.'))
             return false;
 
         bool prevDot = false;
         for (size_t i = start; i < end; ++i)
         {
-            PRODUCTION_CHECK_BOOL(i < text.length(), "validateDotAtom loop bounds");
-            unsigned char c = static_cast<unsigned char>(text[i]);
+            const unsigned char c = static_cast<unsigned char>(data[i]);
             if (c == '.')
             {
                 if (UNLIKELY(prevDot))
@@ -363,27 +527,26 @@ private:
         return true;
     }
 
-    [[nodiscard]] static bool validateQuotedString(std::string_view text, size_t start, size_t end) noexcept
+    [[nodiscard]] static bool validateQuotedString(
+        const char *RESTRICT data,
+        size_t len,
+        size_t start,
+        size_t end) noexcept
     {
-        const size_t len = text.length();
-
-        if (start >= end || end > len || (end - start) > (MAX_LOCAL_PART + 2))
+        if (start >= end || end > len)
             return false;
 
-        PRODUCTION_CHECK_BOOL(start < len && end <= len, "validateQuotedString bounds");
-
-        if (text[start] != '"' || text[end - 1] != '"')
+        const size_t partLen = end - start;
+        if (partLen > (MAX_LOCAL_PART + 2) || partLen < 3)
             return false;
 
-        if ((end - start) < 3)
+        if (data[start] != '"' || data[end - 1] != '"')
             return false;
 
         bool escaped = false;
         for (size_t i = start + 1; i < end - 1; ++i)
         {
-            PRODUCTION_CHECK_BOOL(i < len, "validateQuotedString loop bounds");
-
-            unsigned char c = static_cast<unsigned char>(text[i]);
+            const unsigned char c = static_cast<unsigned char>(data[i]);
             if (escaped)
             {
                 if (c > 127)
@@ -406,24 +569,26 @@ private:
         return !escaped;
     }
 
-    [[nodiscard]] static FORCE_INLINE bool validateScanMode(std::string_view text, size_t start, size_t end) noexcept
+    [[nodiscard]] static bool validateScanMode(
+        const char *RESTRICT data,
+        size_t len,
+        size_t start,
+        size_t end) noexcept
     {
-        const size_t len = text.length();
-
-        if (UNLIKELY(start >= end || end > len || (end - start) > MAX_LOCAL_PART))
+        if (UNLIKELY(start >= end || end > len))
             return false;
 
-        PRODUCTION_CHECK_BOOL(start < len && end <= text.length(), "validateScanMode bounds");
+        const size_t partLen = end - start;
+        if (UNLIKELY(partLen > MAX_LOCAL_PART))
+            return false;
 
-        if (UNLIKELY(text[start] == '"' || text[start] == '.' || text[end - 1] == '.'))
+        if (UNLIKELY(data[start] == '"' || data[start] == '.' || data[end - 1] == '.'))
             return false;
 
         bool prevDot = false;
         for (size_t i = start; i < end; ++i)
         {
-            PRODUCTION_CHECK_BOOL(i < len, "validateScanMode loop bounds");
-
-            unsigned char c = static_cast<unsigned char>(text[i]);
+            const unsigned char c = static_cast<unsigned char>(data[i]);
             if (c == '.')
             {
                 if (UNLIKELY(prevDot))
@@ -441,108 +606,105 @@ private:
     }
 
 public:
+    // Deleted constructors - static-only class
+    LocalPartValidator() = delete;
+    ~LocalPartValidator() = delete;
+
     enum class ValidationMode
     {
         EXACT,
         SCAN
     };
 
-    [[nodiscard]] static FORCE_INLINE bool validate(std::string_view text, size_t start, size_t end,
-                                                    ValidationMode mode = ValidationMode::EXACT) noexcept
+    [[nodiscard]] static bool validate(
+        std::string_view text,
+        size_t start,
+        size_t end,
+        ValidationMode mode = ValidationMode::EXACT) noexcept
     {
         if (UNLIKELY(start >= end || end > text.length()))
             return false;
 
+        const char *data = text.data();
+        const size_t len = text.length();
+
         if (mode == ValidationMode::SCAN)
         {
-            return validateScanMode(text, start, end);
+            return validateScanMode(data, len, start, end);
         }
 
-        if (text[start] == '"')
+        if (data[start] == '"')
         {
-            return validateQuotedString(text, start, end);
+            return validateQuotedString(data, len, start, end);
         }
-        return validateDotAtom(text, start, end);
+        return validateDotAtom(data, len, start, end);
     }
 };
 
 // ====================================================================================================
-// DOMAIN PART VALIDATOR (Single Responsibility Principle)
+// DOMAIN PART VALIDATOR (Stateless - Thread-Safe)
 // ====================================================================================================
 
-class DomainPartValidator
+class DomainPartValidator final
 {
 private:
     static constexpr size_t MAX_DOMAIN_PART = 253;
     static constexpr size_t MAX_LABEL_LENGTH = 63;
 
-    [[nodiscard]] static bool validateDomainLabels(std::string_view text, size_t start, size_t end) noexcept
+    [[nodiscard]] static bool validateDomainLabels(
+        const char *RESTRICT data,
+        size_t len,
+        size_t start,
+        size_t end) noexcept
     {
-        const size_t len = text.length();
-
-        if (start >= end || end > len || (end - start) < 1 || (end - start) > MAX_DOMAIN_PART)
+        if (start >= end || end > len)
             return false;
 
-        PRODUCTION_CHECK_BOOL(start < len && end <= len, "validateDomainLabels bounds");
-
-        if (text[start] == '.' || text[start] == '-' ||
-            text[end - 1] == '.' || text[end - 1] == '-')
+        const size_t domainLen = end - start;
+        if (domainLen < 1 || domainLen > MAX_DOMAIN_PART)
             return false;
 
-        bool prevDot = false;
-        for (size_t i = start; i < end; ++i)
+        if (data[start] == '.' || data[start] == '-' ||
+            data[end - 1] == '.' || data[end - 1] == '-')
+            return false;
+
+        // Check for consecutive dots
+        for (size_t i = start; i < end - 1; ++i)
         {
-            PRODUCTION_CHECK_BOOL(i < len, "validateDomainLabels dot check bounds");
-
-            if (text[i] == '.')
-            {
-                if (prevDot)
-                    return false;
-                prevDot = true;
-            }
-            else
-            {
-                prevDot = false;
-            }
+            if (data[i] == '.' && data[i + 1] == '.')
+                return false;
         }
 
+        // Find last dot for TLD validation
         size_t lastDotPos = SIZE_MAX;
-
-        if (end > start)
+        for (size_t i = end; i > start;)
         {
-            for (size_t i = end; i > start;)
+            --i;
+            if (data[i] == '.')
             {
-                --i;
-
-                if (text[i] == '.')
-                {
-                    lastDotPos = i;
-                    break;
-                }
+                lastDotPos = i;
+                break;
             }
         }
 
+        // Validate labels
         size_t labelStart = start;
         size_t labelCount = 0;
 
         for (size_t i = start; i <= end; ++i)
         {
-            if (i == end || text[i] == '.')
+            if (i == end || data[i] == '.')
             {
-                size_t labelLen = i - labelStart;
+                const size_t labelLen = i - labelStart;
                 if (labelLen == 0 || labelLen > MAX_LABEL_LENGTH)
                     return false;
 
-                PRODUCTION_CHECK_BOOL(labelStart < len && (labelStart + labelLen) <= len,
-                                      "validateDomainLabels label bounds");
-
-                if (text[labelStart] == '-' || text[labelStart + labelLen - 1] == '-')
+                if (data[labelStart] == '-' || data[labelStart + labelLen - 1] == '-')
                     return false;
 
                 for (size_t j = labelStart; j < labelStart + labelLen; ++j)
                 {
-                    PRODUCTION_CHECK_BOOL(j < len, "validateDomainLabels label char bounds");
-                    unsigned char c = static_cast<unsigned char>(text[j]);
+                    const unsigned char c = static_cast<unsigned char>(data[j]);
                     if (!CharacterClassifier::isAlphaNum(c) && c != '-')
                         return false;
                 }
@@ -555,15 +717,16 @@ private:
         if (labelCount < 1)
             return false;
 
+        // TLD validation for multi-label domains
         if (labelCount >= 2 && lastDotPos != SIZE_MAX)
         {
-            size_t tldStart = lastDotPos + 1;
+            const size_t tldStart = lastDotPos + 1;
             if (tldStart >= end)
                 return false;
 
             for (size_t i = tldStart; i < end; ++i)
             {
-                if (!CharacterClassifier::isAlphaNum(static_cast<unsigned char>(text[i])))
+                if (!CharacterClassifier::isAlphaNum(static_cast<unsigned char>(data[i])))
                     return false;
             }
         }
@@ -571,99 +734,98 @@ private:
         return true;
     }
 
-    [[nodiscard]] static bool validateIPv4(std::string_view text, size_t start, size_t end) noexcept
+    [[nodiscard]] static bool validateIPv4(
+        const char *RESTRICT data,
+        size_t len,
+        size_t start,
+        size_t end) noexcept
     {
-        if (start >= end || end > text.length())
+        if (start >= end || end > len)
             return false;
 
-        PRODUCTION_CHECK_BOOL(end <= text.length(), "validateIPv4 end bound");
+        size_t octetIdx = 0;
+        size_t pos = start;
 
-        try
+        while (pos < end && octetIdx < 4)
         {
-            std::array<int, 4> octets{};
-            size_t octetIdx = 0;
-            size_t numStart = start;
-
-            for (size_t i = start; i <= end && octetIdx < 4; ++i)
+            // Find the end of this octet (next dot or end of string)
+            size_t octetEnd = pos;
+            while (octetEnd < end && data[octetEnd] != '.')
             {
-                if (i == end || text[i] == '.')
-                {
-                    if (i == numStart || octetIdx >= 4 || numStart >= end)
-                        return false;
-
-                    int octet = 0;
-                    size_t digitCount = 0;
-
-                    for (size_t j = numStart; j < i && j < text.length(); ++j)
-                    {
-                        PRODUCTION_CHECK_BOOL(j < text.length(), "validateIPv4 parsing bounds");
-
-                        if (!CharacterClassifier::isDigit(static_cast<unsigned char>(text[j])))
-                            return false;
-
-                        if (digitCount == 0 && text[j] == '0' && (i - numStart) > 1)
-                            return false;
-
-                        int digit = text[j] - '0';
-
-                        if (octet > (255 - digit) / 10)
-                            return false;
-
-                        octet = octet * 10 + digit;
-                        ++digitCount;
-                    }
-
-                    if (octet > 255)
-                        return false;
-
-                    octets[octetIdx++] = octet;
-
-                    if (i >= text.length())
-                        break;
-
-                    size_t nextStart = 0;
-                    if (!safe_add(i, 1, nextStart))
-                        return false;
-                    if (nextStart > text.length())
-                        return false;
-
-                    numStart = nextStart;
-                }
+                ++octetEnd;
             }
 
-            if (octetIdx != 4)
+            // Empty octet is invalid
+            if (octetEnd == pos)
                 return false;
 
-            if (numStart == 0 || numStart != end + 1)
+            // Parse the octet
+            int octet = 0;
+            const size_t octetLen = octetEnd - pos;
+
+            for (size_t j = pos; j < octetEnd; ++j)
+            {
+                if (!CharacterClassifier::isDigit(static_cast<unsigned char>(data[j])))
+                    return false;
+
+                // Leading zero check (e.g., "01" is invalid)
+                if (j == pos && data[j] == '0' && octetLen > 1)
+                    return false;
+
+                const int digit = data[j] - '0';
+
+                // Overflow check before multiplication
+                if (octet > 25 || (octet == 25 && digit > 5))
+                    return false;
+
+                octet = octet * 10 + digit;
+            }
+
+            if (octet > 255)
                 return false;
 
-            return true;
+            ++octetIdx;
+
+            // Move past the dot (if there is one)
+            pos = octetEnd;
+            if (pos < end && data[pos] == '.')
+            {
+                ++pos;
+                // Trailing dot with no more octets is invalid
+                if (pos == end)
+                    return false;
+            }
         }
-        catch (...)
-        {
-            return false;
-        }
+
+        // Must have exactly 4 octets AND consumed all input
+        return octetIdx == 4 && pos == end;
     }
 
-    [[nodiscard]] static bool validateIPv6(std::string_view text, size_t start, size_t end) noexcept
+    [[nodiscard]] static bool validateIPv6(
+        const char *RESTRICT data,
+        size_t len,
+        size_t start,
+        size_t end) noexcept
     {
-        if (start >= end || end > text.length())
+        if (start >= end || end > len)
             return false;
 
         int segmentCount = 0;
         bool hasCompression = false;
         size_t pos = start;
-        size_t iterations = 0;
-        static constexpr size_t MAX_IPV6_ITERATIONS = 1000;
 
-        if ((pos + 1) < end && text[pos] == ':' && text[pos + 1] == ':')
+        static constexpr size_t MAX_IPV6_ITERATIONS = 1000;
+        size_t iterations = 0;
+
+        // Handle leading ::
+        if (pos + 1 < end && data[pos] == ':' && data[pos + 1] == ':')
         {
             hasCompression = true;
             pos += 2;
             if (pos >= end)
                 return true;
         }
-        else if (pos < end && text[pos] == ':')
+        else if (pos < end && data[pos] == ':')
         {
             return false;
         }
@@ -673,7 +835,7 @@ private:
             size_t segStart = pos;
             int hexDigits = 0;
 
-            while (pos < end && CharacterClassifier::isHexDigit(static_cast<unsigned char>(text[pos])))
+            while (pos < end && CharacterClassifier::isHexDigit(static_cast<unsigned char>(data[pos])))
             {
                 ++hexDigits;
                 ++pos;
@@ -687,46 +849,36 @@ private:
                 if (segmentCount > 8)
                     return false;
 
-                if (pos < end && text[pos] == '.')
+                // Check for embedded IPv4
+                if (pos < end && data[pos] == '.')
                 {
-                    if (validateIPv4(text, segStart, end))
+                    if (validateIPv4(data, len, segStart, end))
                     {
                         --segmentCount;
                         segmentCount += 2;
                         break;
                     }
-                    else
-                    {
-                        return false;
-                    }
+                    return false;
                 }
             }
 
             if (pos >= end)
                 break;
 
-            PRODUCTION_CHECK_BOOL(pos < text.length(), "validateIPv6 position bounds");
-
-            if (text[pos] == ':')
+            if (data[pos] == ':')
             {
                 ++pos;
 
-                if (pos < end && text[pos] == ':')
+                if (pos < end && data[pos] == ':')
                 {
                     if (hasCompression)
                         return false;
-
                     hasCompression = true;
                     ++pos;
-
                     if (pos >= end)
                         break;
                 }
-                else if (hexDigits == 0)
-                {
-                    return false;
-                }
-                else if (pos >= end)
+                else if (hexDigits == 0 || pos >= end)
                 {
                     return false;
                 }
@@ -740,33 +892,31 @@ private:
         if (iterations >= MAX_IPV6_ITERATIONS)
             return false;
 
-        if (hasCompression)
-            return segmentCount <= 7;
-        else
-            return segmentCount == 8;
+        return hasCompression ? (segmentCount <= 7) : (segmentCount == 8);
     }
 
-    [[nodiscard]] static bool validateIPLiteral(std::string_view text, size_t start, size_t end) noexcept
+    [[nodiscard]] static bool validateIPLiteral(
+        const char *RESTRICT data,
+        size_t len,
+        size_t start,
+        size_t end) noexcept
     {
-        const size_t len = text.length();
-
         if (start >= end || end > len)
             return false;
 
-        PRODUCTION_CHECK_BOOL(start < len && end <= len, "validateIPLiteral bounds");
-
-        if (text[start] != '[' || text[end - 1] != ']')
+        if (data[start] != '[' || data[end - 1] != ']')
             return false;
 
-        size_t ipStart = start + 1;
-        size_t ipEnd = safe_subtract(end, 1);
+        const size_t ipStart = start + 1;
+        const size_t ipEnd = SafeArithmetic::saturating_subtract(end, 1);
 
         if (ipStart >= ipEnd || ipEnd > len)
             return false;
 
+        // Check for IPv6 prefix
         if ((end - start) > 6 && (ipStart + 5) <= len)
         {
-            const char *p = text.data() + ipStart;
+            const char *p = data + ipStart;
 
             if (((p[0] | 0x20) == 'i') &&
                 ((p[1] | 0x20) == 'p') &&
@@ -774,13 +924,14 @@ private:
                 (p[3] == '6') &&
                 (p[4] == ':'))
             {
+
                 size_t addrStart = ipStart + 5;
 
-                if (addrStart < ipEnd && text[addrStart] == ':')
+                if (addrStart < ipEnd && data[addrStart] == ':')
                 {
-                    if ((addrStart + 1) < ipEnd && text[addrStart + 1] == ':')
+                    if ((addrStart + 1) < ipEnd && data[addrStart + 1] == ':')
                     {
-                        // Keep addrStart at IPv6: position
+                        // Keep at IPv6: position
                     }
                     else
                     {
@@ -788,16 +939,18 @@ private:
                     }
                 }
 
-                return validateIPv6(text, addrStart, ipEnd);
+                return validateIPv6(data, len, addrStart, ipEnd);
             }
         }
 
-        if (validateIPv4(text, ipStart, ipEnd))
+        // Try IPv4
+        if (validateIPv4(data, len, ipStart, ipEnd))
             return true;
 
+        // Reject if contains colon (malformed IPv6)
         for (size_t i = ipStart; i < ipEnd; ++i)
         {
-            if (text[i] == ':')
+            if (data[i] == ':')
                 return false;
         }
 
@@ -805,21 +958,28 @@ private:
     }
 
 public:
+    // Deleted constructors - static-only class
+    DomainPartValidator() = delete;
+    ~DomainPartValidator() = delete;
+
     [[nodiscard]] static bool validate(std::string_view text, size_t start, size_t end) noexcept
     {
         if (start >= end || end > text.length())
             return false;
 
-        if (text[start] == '[')
+        const char *data = text.data();
+        const size_t len = text.length();
+
+        if (data[start] == '[')
         {
-            return validateIPLiteral(text, start, end);
+            return validateIPLiteral(data, len, start, end);
         }
-        return validateDomainLabels(text, start, end);
+        return validateDomainLabels(data, len, start, end);
     }
 };
 
 // ====================================================================================================
-// EMAIL VALIDATOR (Open/Closed Principle - extensible through composition)
+// EMAIL VALIDATOR (Stateless - Thread-Safe)
 // ====================================================================================================
 
 class EmailValidator final
@@ -829,70 +989,65 @@ private:
     static constexpr size_t MAX_EMAIL_SIZE = 320;
 
 public:
+    // Deleted constructors - static-only class
+    EmailValidator() = delete;
+    ~EmailValidator() = delete;
+
     [[nodiscard]] static bool isValid(std::string_view email) noexcept
     {
-        try
+        const size_t len = email.length();
+
+        if (UNLIKELY(len < MIN_EMAIL_SIZE || len > MAX_EMAIL_SIZE))
+            return false;
+
+        if (UNLIKELY(email.data() == nullptr))
+            return false;
+
+        const char *data = email.data();
+        size_t atPos = SIZE_MAX;
+        bool inQuotes = false;
+        bool escaped = false;
+
+        for (size_t i = 0; i < len; ++i)
         {
-            const size_t len = email.length();
+            const char c = data[i];
 
-            if (UNLIKELY(len < MIN_EMAIL_SIZE || len > MAX_EMAIL_SIZE))
-                return false;
-
-            if (UNLIKELY(email.data() == nullptr))
-                return false;
-
-            size_t atPos = SIZE_MAX;
-            bool inQuotes = false;
-            bool escaped = false;
-
-            const char *data = email.data();
-            for (size_t i = 0; i < len; ++i)
+            if (escaped)
             {
-                PRODUCTION_CHECK_BOOL(i < len, "EmailValidator loop bounds");
-                char c = data[i];
-
-                if (escaped)
-                {
-                    escaped = false;
-                    continue;
-                }
-
-                if (c == '\\' && inQuotes)
-                {
-                    escaped = true;
-                    continue;
-                }
-
-                if (c == '"')
-                {
-                    inQuotes = !inQuotes;
-                    continue;
-                }
-
-                if (c == '@' && !inQuotes)
-                {
-                    if (UNLIKELY(atPos != SIZE_MAX))
-                        return false;
-                    atPos = i;
-                }
+                escaped = false;
+                continue;
             }
 
-            if (UNLIKELY(atPos == SIZE_MAX || atPos == 0 || atPos >= len - 1))
-                return false;
+            if (c == '\\' && inQuotes)
+            {
+                escaped = true;
+                continue;
+            }
 
-            return LocalPartValidator::validate(email, 0, atPos,
-                                                LocalPartValidator::ValidationMode::EXACT) &&
-                   DomainPartValidator::validate(email, atPos + 1, len);
+            if (c == '"')
+            {
+                inQuotes = !inQuotes;
+                continue;
+            }
+
+            if (c == '@' && !inQuotes)
+            {
+                if (UNLIKELY(atPos != SIZE_MAX))
+                    return false;
+                atPos = i;
+            }
         }
-        catch (...)
-        {
+
+        if (UNLIKELY(atPos == SIZE_MAX || atPos == 0 || atPos >= len - 1))
             return false;
-        }
+
+        return LocalPartValidator::validate(email, 0, atPos, LocalPartValidator::ValidationMode::EXACT) &&
+               DomainPartValidator::validate(email, atPos + 1, len);
     }
 };
 
 // ====================================================================================================
-// EMAIL VALIDATION SERVICE (With Statistics)
+// EMAIL VALIDATION SERVICE (Thread-Safe Instance)
 // ====================================================================================================
 
 class EmailValidationService final
@@ -903,21 +1058,22 @@ private:
 public:
     EmailValidationService() = default;
 
+    // Non-copyable
     EmailValidationService(const EmailValidationService &) = delete;
     EmailValidationService &operator=(const EmailValidationService &) = delete;
 
+    // Movable
     EmailValidationService(EmailValidationService &&) noexcept = default;
     EmailValidationService &operator=(EmailValidationService &&) noexcept = default;
 
     [[nodiscard]] bool validate(std::string_view email) noexcept
     {
         stats_.recordValidation();
-
-        bool result = EmailValidator::isValid(email);
-
+        const bool result = EmailValidator::isValid(email);
         if (!result)
+        {
             stats_.recordError();
-
+        }
         return result;
     }
 
@@ -933,12 +1089,73 @@ public:
 };
 
 // ====================================================================================================
-// EMAIL SCANNER WITH HEURISTIC EXTRACTION - STATELESS (Pure Functions)
+// OPERATION LIMITER (Thread-Safe Resource Control)
+// ====================================================================================================
+
+class OperationLimiter final
+{
+public:
+    // Thread-local batch counter for reduced contention
+    struct alignas(64) BatchState
+    {
+        size_t localCount = 0;
+        static constexpr size_t BATCH_SIZE = 1000;
+    };
+
+private:
+    std::atomic<size_t> operationCount_{0};
+    const size_t maxOperations_;
+
+public:
+    explicit OperationLimiter(size_t maxOps) noexcept : maxOperations_(maxOps) {}
+
+    // Non-copyable, non-movable
+    OperationLimiter(const OperationLimiter &) = delete;
+    OperationLimiter &operator=(const OperationLimiter &) = delete;
+
+    [[nodiscard]] bool recordOperation(BatchState &batch) noexcept
+    {
+        if (++batch.localCount >= BatchState::BATCH_SIZE)
+        {
+            operationCount_.fetch_add(BatchState::BATCH_SIZE, std::memory_order_acq_rel);
+            batch.localCount = 0;
+        }
+        return operationCount_.load(std::memory_order_acquire) <= maxOperations_;
+    }
+
+    void flush(BatchState &batch) noexcept
+    {
+        if (batch.localCount > 0)
+        {
+            operationCount_.fetch_add(batch.localCount, std::memory_order_acq_rel);
+            batch.localCount = 0;
+        }
+    }
+
+    [[nodiscard]] bool isWithinLimit() const noexcept
+    {
+        return operationCount_.load(std::memory_order_acquire) <= maxOperations_;
+    }
+
+    [[nodiscard]] size_t getCount() const noexcept
+    {
+        return operationCount_.load(std::memory_order_acquire);
+    }
+
+    void reset() noexcept
+    {
+        operationCount_.store(0, std::memory_order_release);
+    }
+};
+
+// ====================================================================================================
+// EMAIL SCANNER (Stateless Core + Thread-Local State for Performance)
 // ====================================================================================================
 
 class EmailScanner final
 {
 private:
+    // Resource limits
     static constexpr size_t MAX_INPUT_SIZE = 10 * 1024 * 1024;
     static constexpr size_t MAX_LEFT_SCAN = 4096;
     static constexpr size_t MAX_EMAILS_EXTRACT = 10000;
@@ -950,6 +1167,9 @@ private:
     static constexpr size_t MAX_AT_SYMBOLS = 1000;
     static constexpr size_t MAX_SEEN_SET_SIZE = 5000;
     static constexpr size_t MAX_TOTAL_OPERATIONS = 100'000'000;
+    static constexpr size_t MAX_LOCAL_PART = 64;
+    static constexpr size_t MAX_DOMAIN_PART = 255;
+    static constexpr size_t MAX_LABEL_LENGTH = 63;
 
     struct EmailBoundaries
     {
@@ -960,109 +1180,92 @@ private:
         bool didTrimDomain;
     };
 
-    struct OperationBatcher
-    {
-        size_t local_count = 0;
-        static constexpr size_t BATCH_SIZE = 1000;
-
-        inline void recordOperation(std::atomic<size_t> &counter) noexcept
-        {
-            if (++local_count >= BATCH_SIZE)
-            {
-                counter.fetch_add(BATCH_SIZE, std::memory_order_relaxed);
-                local_count = 0;
-            }
-        }
-
-        inline bool checkLimit(std::atomic<size_t> &counter, size_t max_ops) noexcept
-        {
-            recordOperation(counter);
-            return counter.load(std::memory_order_relaxed) > max_ops;
-        }
-    };
-
-    [[nodiscard]] static FORCE_INLINE size_t findFirstAlnum(const char *data, size_t dataLen,
-                                                            size_t pos, size_t limit) noexcept
-    {
-        limit = std::min(limit, dataLen);
-
-        while (pos < limit)
-        {
-            PRODUCTION_CHECK_BOOL(pos < dataLen, "findFirstAlnum bounds");
-            unsigned char uc = static_cast<unsigned char>(data[pos]);
-            if (CharacterClassifier::isAlphaNum(uc))
-                return pos;
-            ++pos;
-        }
-        return SIZE_MAX;
-    }
-
-    [[nodiscard]] static FORCE_INLINE size_t findFirstAtext(const char *data, size_t dataLen,
-                                                            size_t pos, size_t limit) noexcept
-    {
-        limit = std::min(limit, dataLen);
-
-        while (pos < limit)
-        {
-            PRODUCTION_CHECK_BOOL(pos < dataLen, "findFirstAtext bounds");
-            unsigned char uc = static_cast<unsigned char>(data[pos]);
-            if (LIKELY(CharacterClassifier::isAtext(uc)))
-                return pos;
-            ++pos;
-        }
-        return SIZE_MAX;
-    }
-
-    [[nodiscard]] static inline std::optional<size_t> safe_memchr_index(
-        const char *data, size_t start, size_t len, char ch) noexcept
+    [[nodiscard]] static std::optional<size_t> findAtSymbol(
+        const char *RESTRICT data,
+        size_t start,
+        size_t len) noexcept
     {
         if (start >= len || !data)
             return std::nullopt;
 
         const char *ptr = static_cast<const char *>(
-            std::memchr(data + start, ch, len - start));
+            std::memchr(data + start, '@', len - start));
 
-        if (!ptr)
-            return std::nullopt;
-
-        if (ptr < data || ptr >= data + len)
+        if (!ptr || ptr < data || ptr >= data + len)
             return std::nullopt;
 
         return static_cast<size_t>(ptr - data);
     }
 
-    [[nodiscard]] static EmailBoundaries findEmailBoundaries(std::string_view text, size_t atPos,
-                                                             size_t minScannedIndex,
-                                                             std::atomic<size_t> &opCounter,
-                                                             OperationBatcher &batcher) noexcept
+    [[nodiscard]] static size_t findFirstAlnum(
+        const char *RESTRICT data,
+        size_t dataLen,
+        size_t pos,
+        size_t limit) noexcept
     {
-        const size_t len = text.length();
-        const char *data = text.data();
+        limit = std::min(limit, dataLen);
 
-        if (batcher.checkLimit(opCounter, MAX_TOTAL_OPERATIONS))
+        while (pos < limit)
+        {
+            if (CharacterClassifier::isAlphaNum(static_cast<unsigned char>(data[pos])))
+                return pos;
+            ++pos;
+        }
+        return SIZE_MAX;
+    }
+
+    [[nodiscard]] static size_t findFirstAtext(
+        const char *RESTRICT data,
+        size_t dataLen,
+        size_t pos,
+        size_t limit) noexcept
+    {
+        limit = std::min(limit, dataLen);
+
+        while (pos < limit)
+        {
+            if (CharacterClassifier::isAtext(static_cast<unsigned char>(data[pos])))
+                return pos;
+            ++pos;
+        }
+        return SIZE_MAX;
+    }
+
+    [[nodiscard]] static EmailBoundaries findEmailBoundaries(
+        const char *RESTRICT data,
+        size_t len,
+        size_t atPos,
+        size_t minScannedIndex,
+        OperationLimiter &limiter,
+        OperationLimiter::BatchState &batch) noexcept
+    {
+
+        if (!limiter.recordOperation(batch))
         {
             return {atPos, atPos, false, atPos, false};
         }
 
         if (atPos >= len) [[unlikely]]
+        {
             return {atPos, atPos, false, atPos, false};
+        }
 
         size_t end = atPos + 1;
 
+        // Reject IP literals in scan mode
         if (end < len && data[end] == '[') [[unlikely]]
         {
             return {atPos, atPos, false, atPos + 1, false};
         }
 
-        static constexpr size_t MAX_DOMAIN_PART = 255;
-        static constexpr size_t MAX_LABEL_LENGTH = 63;
-        size_t domain_chars = 0;
+        // Scan domain part
+        size_t domainChars = 0;
         bool didTrimDomain = false;
-        size_t current_label_length = 0;
+        size_t currentLabelLength = 0;
 
         while (end < len && CharacterClassifier::isDomainChar(static_cast<unsigned char>(data[end])))
         {
-            if (domain_chars >= MAX_DOMAIN_PART)
+            if (domainChars >= MAX_DOMAIN_PART)
             {
                 end = atPos + 1 + MAX_DOMAIN_PART;
                 didTrimDomain = true;
@@ -1071,47 +1274,48 @@ private:
 
             if (data[end] == '.')
             {
-                current_label_length = 0;
+                currentLabelLength = 0;
             }
             else
             {
-                ++current_label_length;
-                if (current_label_length > MAX_LABEL_LENGTH)
+                ++currentLabelLength;
+                if (currentLabelLength > MAX_LABEL_LENGTH)
                 {
                     didTrimDomain = true;
                 }
             }
 
             ++end;
-            ++domain_chars;
+            ++domainChars;
 
-            batcher.recordOperation(opCounter);
-            if (opCounter.load(std::memory_order_relaxed) > MAX_TOTAL_OPERATIONS) [[unlikely]]
+            if (!limiter.recordOperation(batch)) [[unlikely]]
             {
                 return {atPos, atPos, false, atPos, false};
             }
         }
 
+        // Trim trailing dots
         while (end > atPos + 1 && data[end - 1] == '.')
         {
-            PRODUCTION_CHECK_BOUNDARIES(end > 0 && end - 1 < len, "findEmailBoundaries trailing dot removal", atPos);
             --end;
         }
 
+        // Trim trailing hyphens if followed by @
         if (end < len && data[end] == '@')
         {
             while (end > atPos + 1 && data[end - 1] == '-')
             {
-                PRODUCTION_CHECK_BOUNDARIES(end > 0 && end - 1 < len, "findEmailBoundaries hyphen removal", atPos);
                 --end;
             }
         }
 
-        size_t absoluteMin = safe_subtract(atPos, MAX_LEFT_SCAN);
+        // Backward scan for local part
+        const size_t absoluteMin = SafeArithmetic::saturating_subtract(atPos, MAX_LEFT_SCAN);
 
+        // Handle quoted local parts
         if (atPos > 0 && (data[atPos - 1] == '"' || data[atPos - 1] == '\'' || data[atPos - 1] == '`'))
         {
-            unsigned char closingQuote = static_cast<unsigned char>(data[atPos - 1]);
+            const unsigned char closingQuote = static_cast<unsigned char>(data[atPos - 1]);
             size_t quotesSeen = 0;
 
             if (atPos >= 2)
@@ -1121,8 +1325,7 @@ private:
                     --i;
                     ++quotesSeen;
 
-                    batcher.recordOperation(opCounter);
-                    if (opCounter.load(std::memory_order_relaxed) > MAX_TOTAL_OPERATIONS) [[unlikely]]
+                    if (!limiter.recordOperation(batch)) [[unlikely]]
                     {
                         return {atPos, atPos, false, atPos, false};
                     }
@@ -1136,16 +1339,12 @@ private:
 
                         if (!validBoundary && i > 0)
                         {
-                            unsigned char prevChar = static_cast<unsigned char>(data[i - 1]);
+                            const unsigned char prevChar = static_cast<unsigned char>(data[i - 1]);
                             validBoundary = CharacterClassifier::isScanBoundary(prevChar) ||
-                                            prevChar == ' ' ||
-                                            prevChar == '=' ||
-                                            prevChar == ':' ||
-                                            prevChar == ',' ||
-                                            prevChar == '<' ||
-                                            prevChar == '(' ||
-                                            prevChar == '[' ||
-                                            prevChar == '\r' ||
+                                            prevChar == ' ' || prevChar == '=' ||
+                                            prevChar == ':' || prevChar == ',' ||
+                                            prevChar == '<' || prevChar == '(' ||
+                                            prevChar == '[' || prevChar == '\r' ||
                                             prevChar == '\n' ||
                                             CharacterClassifier::isInvalidLocalChar(prevChar);
                         }
@@ -1155,7 +1354,7 @@ private:
                             bool rightBoundaryValid = true;
                             if (end < len)
                             {
-                                unsigned char nextChar = static_cast<unsigned char>(data[end]);
+                                const unsigned char nextChar = static_cast<unsigned char>(data[end]);
                                 if (!CharacterClassifier::isScanRightBoundary(nextChar) &&
                                     nextChar != '\'' && nextChar != '`' && nextChar != '"' &&
                                     nextChar != '@' && nextChar != '\\' &&
@@ -1177,7 +1376,8 @@ private:
             }
         }
 
-        size_t effectiveMin = std::max(minScannedIndex, absoluteMin);
+        // Standard backward scan
+        const size_t effectiveMin = std::max(minScannedIndex, absoluteMin);
         size_t start = atPos;
         bool hitInvalidChar = false;
         size_t invalidCharPos = atPos;
@@ -1187,19 +1387,15 @@ private:
 
         while (start > effectiveMin && start > 0 && charsScanned < MAX_BACKWARD_SCAN_CHARS)
         {
-            batcher.recordOperation(opCounter);
-            if (opCounter.load(std::memory_order_relaxed) > MAX_TOTAL_OPERATIONS) [[unlikely]]
+            if (!limiter.recordOperation(batch)) [[unlikely]]
             {
                 return {atPos, atPos, false, atPos, false};
             }
 
-            PRODUCTION_CHECK_BOUNDARIES(start > 0, "findEmailBoundaries backward scan start > 0", atPos);
-            unsigned char prevChar = static_cast<unsigned char>(data[start - 1]);
+            const unsigned char prevChar = static_cast<unsigned char>(data[start - 1]);
 
             if (prevChar == '@')
-            {
                 break;
-            }
 
             if (prevChar == '.' && start > 1 && start > effectiveMin + 1)
             {
@@ -1218,27 +1414,24 @@ private:
                     size_t lookback = start - 2;
                     size_t validStart = start - 1;
                     bool foundValid = false;
-                    const size_t lookbackLimit = effectiveMin;
-                    size_t lookbackIterations = 0;
                     static constexpr size_t MAX_LOOKBACK_ITERATIONS = 100;
+                    size_t lookbackIterations = 0;
 
-                    while (lookback >= lookbackLimit && lookback < atPos &&
+                    while (lookback >= effectiveMin && lookback < atPos &&
                            lookback < len && lookbackIterations++ < MAX_LOOKBACK_ITERATIONS)
                     {
-                        PRODUCTION_CHECK_BOUNDARIES(lookback < len, "findEmailBoundaries lookback", atPos);
 
-                        batcher.recordOperation(opCounter);
-                        if (opCounter.load(std::memory_order_relaxed) > MAX_TOTAL_OPERATIONS) [[unlikely]]
+                        if (!limiter.recordOperation(batch)) [[unlikely]]
                         {
                             return {atPos, atPos, false, atPos, false};
                         }
 
-                        unsigned char c = static_cast<unsigned char>(data[lookback]);
+                        const unsigned char c = static_cast<unsigned char>(data[lookback]);
                         if (CharacterClassifier::isAtext(c) && c != '.')
                         {
                             foundValid = true;
                             validStart = lookback;
-                            if (lookback == lookbackLimit || lookback == 0)
+                            if (lookback == effectiveMin || lookback == 0)
                                 break;
                             --lookback;
                             continue;
@@ -1292,7 +1485,7 @@ private:
                 {
                     if (start > 1 && start > effectiveMin + 1)
                     {
-                        unsigned char prevPrevChar = static_cast<unsigned char>(data[start - 2]);
+                        const unsigned char prevPrevChar = static_cast<unsigned char>(data[start - 2]);
                         if (prevPrevChar == '=' || prevPrevChar == ':' ||
                             CharacterClassifier::isScanBoundary(prevPrevChar) ||
                             CharacterClassifier::isQuoteChar(prevPrevChar))
@@ -1314,11 +1507,7 @@ private:
                 }
             }
 
-            if (prevChar == '.')
-            {
-                --start;
-            }
-            else if (CharacterClassifier::isAtext(prevChar))
+            if (prevChar == '.' || CharacterClassifier::isAtext(prevChar))
             {
                 --start;
             }
@@ -1330,6 +1519,7 @@ private:
             ++charsScanned;
         }
 
+        // Recovery from invalid characters
         if (hitInvalidChar)
         {
             size_t recoveryPos = findFirstAlnum(data, len, std::max(invalidCharPos, effectiveMin), atPos);
@@ -1349,24 +1539,25 @@ private:
                 }
                 else
                 {
-                    size_t skip = std::min(invalidCharPos + 1, len);
+                    const size_t skip = std::min(invalidCharPos + 1, len);
                     return {atPos, atPos, false, skip, false};
                 }
             }
         }
 
+        // Trim leading dots
         while (start < atPos && data[start] == '.')
         {
-            PRODUCTION_CHECK_BOUNDARIES(start < len, "findEmailBoundaries leading dot removal", atPos);
             ++start;
         }
 
+        // Additional cleanup
         if (start < atPos && start > effectiveMin && start > 0)
         {
-            unsigned char charBeforeStart = static_cast<unsigned char>(data[start - 1]);
+            const unsigned char charBeforeStart = static_cast<unsigned char>(data[start - 1]);
             if (CharacterClassifier::isInvalidLocalChar(charBeforeStart))
             {
-                size_t firstAlnum = findFirstAlnum(data, len, start, atPos);
+                const size_t firstAlnum = findFirstAlnum(data, len, start, atPos);
                 if (firstAlnum != SIZE_MAX)
                 {
                     start = firstAlnum;
@@ -1376,11 +1567,11 @@ private:
 
         if (UNLIKELY(start >= atPos))
         {
-            size_t skip = std::min(atPos + 1, len);
+            const size_t skip = std::min(atPos + 1, len);
             return {atPos, atPos, false, skip, false};
         }
 
-        static constexpr size_t MAX_LOCAL_PART = 64;
+        // Enforce local part length limit
         if ((atPos - start) > MAX_LOCAL_PART)
         {
             didTrim = true;
@@ -1388,13 +1579,12 @@ private:
 
             while (start < atPos && data[start] == '.')
             {
-                PRODUCTION_CHECK_BOUNDARIES(start < len, "findEmailBoundaries trimming dot removal", atPos);
                 ++start;
             }
 
             if (start > effectiveMin && start > 0)
             {
-                unsigned char prevChar = static_cast<unsigned char>(data[start - 1]);
+                const unsigned char prevChar = static_cast<unsigned char>(data[start - 1]);
 
                 if (!CharacterClassifier::isScanBoundary(prevChar) &&
                     !CharacterClassifier::isInvalidLocalChar(prevChar) &&
@@ -1402,6 +1592,7 @@ private:
                     prevChar != '\'' && prevChar != '`' && prevChar != '"' &&
                     prevChar != '/')
                 {
+
                     size_t firstValid = findFirstAlnum(data, len, start, atPos);
                     if (firstValid != SIZE_MAX && firstValid < atPos)
                     {
@@ -1429,12 +1620,12 @@ private:
             }
         }
 
+        // Boundary validation
         bool validBoundaries = true;
 
         if (start > effectiveMin && start > 0)
         {
-            PRODUCTION_CHECK_BOUNDARIES(start - 1 < len, "findEmailBoundaries boundary validation", atPos);
-            unsigned char prevChar = static_cast<unsigned char>(data[start - 1]);
+            const unsigned char prevChar = static_cast<unsigned char>(data[start - 1]);
 
             if (didTrim)
             {
@@ -1456,9 +1647,10 @@ private:
                 validBoundaries = false;
             }
 
-            if (!didTrim && CharacterClassifier::isQuoteChar(prevChar) && start > effectiveMin + 1 && start >= 2)
+            if (!didTrim && CharacterClassifier::isQuoteChar(prevChar) &&
+                start > effectiveMin + 1 && start >= 2)
             {
-                unsigned char prevPrevChar = static_cast<unsigned char>(data[start - 2]);
+                const unsigned char prevPrevChar = static_cast<unsigned char>(data[start - 2]);
                 if (CharacterClassifier::isScanBoundary(prevPrevChar) ||
                     prevPrevChar == '=' || prevPrevChar == ':' ||
                     CharacterClassifier::isQuoteChar(prevPrevChar))
@@ -1476,13 +1668,14 @@ private:
             }
         }
 
+        // Right boundary validation
         if (end < len && validBoundaries && !didTrimDomain)
         {
-            PRODUCTION_CHECK_BOUNDARIES(end < len, "findEmailBoundaries right boundary", atPos);
-            unsigned char nextChar = static_cast<unsigned char>(data[end]);
+            const unsigned char nextChar = static_cast<unsigned char>(data[end]);
             if (!CharacterClassifier::isScanRightBoundary(nextChar) &&
                 nextChar != '\'' && nextChar != '`' && nextChar != '"' &&
-                nextChar != '@' && nextChar != '\\' && !CharacterClassifier::isAtext(nextChar))
+                nextChar != '@' && nextChar != '\\' &&
+                !CharacterClassifier::isAtext(nextChar))
             {
                 validBoundaries = false;
             }
@@ -1492,112 +1685,99 @@ private:
     }
 
 public:
+    // Deleted constructors - static-only class
+    EmailScanner() = delete;
+    ~EmailScanner() = delete;
+
     [[nodiscard]] static bool contains(std::string_view text) noexcept
     {
-        try
+        const size_t len = text.length();
+
+        if (UNLIKELY(len > MAX_INPUT_SIZE || len < 5))
+            return false;
+
+        if (UNLIKELY(text.data() == nullptr && len > 0))
+            return false;
+
+        const char *data = text.data();
+        size_t pos = 0;
+        size_t minScannedIndex = 0;
+        size_t lastConsumedEnd = 0;
+
+        OperationLimiter limiter(MAX_TOTAL_OPERATIONS);
+        OperationLimiter::BatchState batch{};
+
+        static constexpr size_t MAX_TOTAL_CHARS_SCANNED = 1'000'000;
+        size_t totalCharsScanned = 0;
+
+        while (pos < len)
         {
-            const size_t len = text.length();
+            if (!limiter.isWithinLimit()) [[unlikely]]
+                break;
 
-            if (UNLIKELY(len > MAX_INPUT_SIZE || len < 5))
-                return false;
+            auto atPosOpt = findAtSymbol(data, pos, len);
+            if (!atPosOpt)
+                break;
 
-            if (UNLIKELY(text.data() == nullptr && len > 0))
-                return false;
+            const size_t atPos = *atPosOpt;
 
-            const char *data = text.data();
-            size_t pos = 0;
-            size_t minScannedIndex = 0;
-            size_t lastConsumedEnd = 0;
-
-            std::atomic<size_t> totalOps{0};
-            OperationBatcher batcher;
-            batcher.local_count = 0;
-
-            static constexpr size_t MAX_TOTAL_CHARS_SCANNED = 1'000'000;
-            size_t totalCharsScanned = 0;
-
-            while (pos < len)
+            if (UNLIKELY(atPos < 1 || atPos >= len - 3))
             {
-                if (batcher.checkLimit(totalOps, MAX_TOTAL_OPERATIONS)) [[unlikely]]
-                    break;
-
-                auto atPosOpt = safe_memchr_index(data, pos, len, '@');
-                if (!atPosOpt)
-                    break;
-
-                size_t atPos = *atPosOpt;
-
-                if (UNLIKELY(atPos < 1 || atPos >= len - 3))
-                {
-                    pos = atPos + 1;
-                    continue;
-                }
-
-                if (atPos < lastConsumedEnd)
-                {
-                    pos = atPos + 1;
-                    continue;
-                }
-
-                auto boundaries = findEmailBoundaries(text, atPos, minScannedIndex, totalOps, batcher);
-
-                size_t charsScanned = 0;
-                size_t temp = 0;
-
-                if (!safe_add(safe_subtract(atPos, boundaries.start),
-                              safe_subtract(boundaries.end, atPos), temp))
-                    break;
-
-                charsScanned = temp;
-
-                if (charsScanned > MAX_BACKTRACK_PER_AT)
-                {
-                    pos = atPos + 1;
-                    continue;
-                }
-
-                if (!safe_add(totalCharsScanned, charsScanned, totalCharsScanned))
-                    break;
-
-                if (totalCharsScanned > MAX_TOTAL_CHARS_SCANNED)
-                    break;
-
-                if (!boundaries.validBoundaries)
-                {
-                    if (boundaries.skipTo > 0)
-                        pos = boundaries.skipTo;
-                    else
-                        pos = atPos + 1;
-                    continue;
-                }
-
-                LocalPartValidator::ValidationMode mode = LocalPartValidator::ValidationMode::SCAN;
-                if (boundaries.start < atPos && boundaries.start < len &&
-                    text[boundaries.start] == '"')
-                {
-                    mode = LocalPartValidator::ValidationMode::EXACT;
-                }
-
-                bool localValid = LocalPartValidator::validate(text, boundaries.start, atPos, mode);
-                bool domainValid = boundaries.didTrimDomain ||
-                                   DomainPartValidator::validate(text, atPos + 1, boundaries.end);
-
-                if (localValid && domainValid)
-                {
-                    minScannedIndex = std::max(minScannedIndex, boundaries.start);
-                    lastConsumedEnd = std::max(lastConsumedEnd, boundaries.end);
-                    return true;
-                }
-
                 pos = atPos + 1;
+                continue;
             }
 
-            return false;
+            if (atPos < lastConsumedEnd)
+            {
+                pos = atPos + 1;
+                continue;
+            }
+
+            auto boundaries = findEmailBoundaries(data, len, atPos, minScannedIndex, limiter, batch);
+
+            // Calculate chars scanned with overflow protection
+            size_t charsScanned = 0;
+            size_t temp1 = SafeArithmetic::saturating_subtract(atPos, boundaries.start);
+            size_t temp2 = SafeArithmetic::saturating_subtract(boundaries.end, atPos);
+            charsScanned = SafeArithmetic::saturating_add(temp1, temp2);
+
+            if (charsScanned > MAX_BACKTRACK_PER_AT)
+            {
+                pos = atPos + 1;
+                continue;
+            }
+
+            totalCharsScanned = SafeArithmetic::saturating_add(totalCharsScanned, charsScanned);
+            if (totalCharsScanned > MAX_TOTAL_CHARS_SCANNED)
+                break;
+
+            if (!boundaries.validBoundaries)
+            {
+                pos = boundaries.skipTo > 0 ? boundaries.skipTo : atPos + 1;
+                continue;
+            }
+
+            auto mode = LocalPartValidator::ValidationMode::SCAN;
+            if (boundaries.start < atPos && boundaries.start < len && data[boundaries.start] == '"')
+            {
+                mode = LocalPartValidator::ValidationMode::EXACT;
+            }
+
+            const bool localValid = LocalPartValidator::validate(text, boundaries.start, atPos, mode);
+            const bool domainValid = boundaries.didTrimDomain ||
+                                     DomainPartValidator::validate(text, atPos + 1, boundaries.end);
+
+            if (localValid && domainValid)
+            {
+                limiter.flush(batch);
+                return true;
+            }
+
+            pos = atPos + 1;
         }
-        catch (...)
-        {
-            return false;
-        }
+
+        limiter.flush(batch);
+        return false;
     }
 
     [[nodiscard]] static std::vector<std::string> extract(std::string_view text) noexcept
@@ -1614,23 +1794,18 @@ public:
             if (UNLIKELY(text.data() == nullptr && len > 0))
                 return emails;
 
-            size_t initial_reserve = std::min({MAX_INITIAL_RESERVE,
-                                               len / 30,
-                                               static_cast<size_t>(10)});
+            // Reserve with size limits
+            const size_t initialReserve = std::min({MAX_INITIAL_RESERVE,
+                                                    len / 30,
+                                                    static_cast<size_t>(10)});
+            emails.reserve(initialReserve);
 
-            emails.reserve(initial_reserve);
-
+            // Use unordered_set for deduplication
             std::unordered_set<std::string> seen;
-            size_t expected_unique = std::min({len / 30,
-                                               MAX_EMAILS_EXTRACT,
-                                               MAX_SEEN_SET_SIZE});
-
-            size_t reserve_size = 0;
-            if (safe_add(expected_unique * 13 / 10, 1, reserve_size))
-            {
-                reserve_size = std::min(reserve_size, MAX_SEEN_SET_SIZE);
-                seen.reserve(reserve_size);
-            }
+            const size_t expectedUnique = std::min({len / 30,
+                                                    MAX_EMAILS_EXTRACT,
+                                                    MAX_SEEN_SET_SIZE});
+            seen.reserve(std::min(expectedUnique * 13 / 10 + 1, MAX_SEEN_SET_SIZE));
 
             const char *data = text.data();
             size_t pos = 0;
@@ -1639,32 +1814,30 @@ public:
             size_t extractedCount = 0;
             size_t atSymbolsProcessed = 0;
 
-            std::atomic<size_t> totalOps{0};
-            OperationBatcher batcher;
-            batcher.local_count = 0;
+            OperationLimiter limiter(MAX_TOTAL_OPERATIONS);
+            OperationLimiter::BatchState batch{};
 
             static constexpr size_t MAX_SCAN_ITERATIONS = 100'000;
-            size_t iterations = 0;
             static constexpr size_t MAX_TOTAL_CHARS_SCANNED = 1'000'000;
+            size_t iterations = 0;
             size_t totalCharsScanned = 0;
             size_t estimatedMemory = 0;
 
             while (pos < len && iterations++ < MAX_SCAN_ITERATIONS)
             {
-                if (batcher.checkLimit(totalOps, MAX_TOTAL_OPERATIONS)) [[unlikely]]
+                if (!limiter.isWithinLimit()) [[unlikely]]
                     break;
 
                 if (UNLIKELY(extractedCount >= MAX_EMAILS_EXTRACT))
                     break;
-
                 if (UNLIKELY(atSymbolsProcessed >= MAX_AT_SYMBOLS))
                     break;
 
-                auto atPosOpt = safe_memchr_index(data, pos, len, '@');
+                auto atPosOpt = findAtSymbol(data, pos, len);
                 if (!atPosOpt)
                     break;
 
-                size_t atPos = *atPosOpt;
+                const size_t atPos = *atPosOpt;
                 ++atSymbolsProcessed;
 
                 if (UNLIKELY(atPos < 1 || atPos >= len - 3))
@@ -1679,16 +1852,12 @@ public:
                     continue;
                 }
 
-                auto boundaries = findEmailBoundaries(text, atPos, minScannedIndex, totalOps, batcher);
+                auto boundaries = findEmailBoundaries(data, len, atPos, minScannedIndex, limiter, batch);
 
-                size_t charsScanned = 0;
-                size_t temp = 0;
-
-                if (!safe_add(safe_subtract(atPos, boundaries.start),
-                              safe_subtract(boundaries.end, atPos), temp))
-                    break;
-
-                charsScanned = temp;
+                // Safe arithmetic for chars scanned
+                const size_t temp1 = SafeArithmetic::saturating_subtract(atPos, boundaries.start);
+                const size_t temp2 = SafeArithmetic::saturating_subtract(boundaries.end, atPos);
+                const size_t charsScanned = SafeArithmetic::saturating_add(temp1, temp2);
 
                 if (charsScanned > MAX_BACKTRACK_PER_AT)
                 {
@@ -1696,31 +1865,25 @@ public:
                     continue;
                 }
 
-                if (!safe_add(totalCharsScanned, charsScanned, totalCharsScanned))
-                    break;
-
+                totalCharsScanned = SafeArithmetic::saturating_add(totalCharsScanned, charsScanned);
                 if (totalCharsScanned > MAX_TOTAL_CHARS_SCANNED)
                     break;
 
                 if (!boundaries.validBoundaries)
                 {
-                    if (boundaries.skipTo > 0)
-                        pos = boundaries.skipTo;
-                    else
-                        pos = atPos + 1;
+                    pos = boundaries.skipTo > 0 ? boundaries.skipTo : atPos + 1;
                     continue;
                 }
 
-                LocalPartValidator::ValidationMode mode = LocalPartValidator::ValidationMode::SCAN;
-                if (boundaries.start < atPos && boundaries.start < len &&
-                    text[boundaries.start] == '"')
+                auto mode = LocalPartValidator::ValidationMode::SCAN;
+                if (boundaries.start < atPos && boundaries.start < len && data[boundaries.start] == '"')
                 {
                     mode = LocalPartValidator::ValidationMode::EXACT;
                 }
 
-                bool localValid = LocalPartValidator::validate(text, boundaries.start, atPos, mode);
-                bool domainValid = boundaries.didTrimDomain ||
-                                   DomainPartValidator::validate(text, atPos + 1, boundaries.end);
+                const bool localValid = LocalPartValidator::validate(text, boundaries.start, atPos, mode);
+                const bool domainValid = boundaries.didTrimDomain ||
+                                         DomainPartValidator::validate(text, atPos + 1, boundaries.end);
 
                 if (localValid && domainValid)
                 {
@@ -1732,59 +1895,49 @@ public:
                         continue;
                     }
 
+                    // Create email string
                     std::string email(text.substr(boundaries.start, boundaries.end - boundaries.start));
 
-                    size_t emailMemory = email.length() + sizeof(std::string) +
-                                         sizeof(void *) * 2;
-                    size_t newMemory = 0;
+                    // Memory budget check
+                    const size_t emailMemory = email.length() + sizeof(std::string) + sizeof(void *) * 2;
+                    const size_t newMemory = SafeArithmetic::saturating_add(estimatedMemory, emailMemory);
 
-                    if (!safe_add(estimatedMemory, emailMemory, newMemory) ||
-                        newMemory > MAX_MEMORY_BUDGET)
+                    if (newMemory > MAX_MEMORY_BUDGET)
                         break;
-
                     if (seen.size() >= MAX_SEEN_SET_SIZE)
                         break;
 
+                    // Check vector capacity
                     if (emails.size() >= emails.capacity())
                     {
-                        size_t new_capacity = emails.size() + 1;
-                        size_t additional_memory = new_capacity * sizeof(std::string);
-
-                        if (!safe_add(newMemory, additional_memory, newMemory) ||
-                            newMemory > MAX_MEMORY_BUDGET)
+                        const size_t additionalMemory = (emails.size() + 1) * sizeof(std::string);
+                        if (SafeArithmetic::saturating_add(newMemory, additionalMemory) > MAX_MEMORY_BUDGET)
                             break;
-
-                        emails.reserve(new_capacity);
+                        emails.reserve(emails.size() + 1);
                     }
 
+                    // Insert with deduplication
                     auto [it, inserted] = seen.insert(email);
 
                     if (inserted)
                     {
-                        try
-                        {
-                            emails.push_back(std::move(email));
-                            estimatedMemory = newMemory;
-                            ++extractedCount;
-                        }
-                        catch (...)
-                        {
-                            seen.erase(it);
-                            break;
-                        }
+                        emails.push_back(std::move(email));
+                        estimatedMemory = newMemory;
+                        ++extractedCount;
                     }
 
                     minScannedIndex = std::max(minScannedIndex, boundaries.start);
                     lastConsumedEnd = std::max(lastConsumedEnd, boundaries.end);
 
+                    // Check for adjacent emails
                     if (boundaries.end < len)
                     {
-                        unsigned char nextChar = static_cast<unsigned char>(data[boundaries.end]);
+                        const unsigned char nextChar = static_cast<unsigned char>(data[boundaries.end]);
 
                         if (CharacterClassifier::isAtext(nextChar) || nextChar == '.')
                         {
                             bool foundNearbyAt = false;
-                            size_t lookLimit = std::min(boundaries.end + 65, len);
+                            const size_t lookLimit = std::min(boundaries.end + 65, len);
 
                             for (size_t look = boundaries.end; look < lookLimit; ++look)
                             {
@@ -1809,18 +1962,23 @@ public:
 
                 pos = atPos + 1;
             }
+
+            limiter.flush(batch);
         }
         catch (const std::bad_alloc &)
         {
             emails.clear();
+            emails.shrink_to_fit();
         }
         catch (const std::length_error &)
         {
             emails.clear();
+            emails.shrink_to_fit();
         }
         catch (...)
         {
             emails.clear();
+            emails.shrink_to_fit();
         }
 
         return emails;
@@ -1828,7 +1986,7 @@ public:
 };
 
 // ====================================================================================================
-// EMAIL SCANNER SERVICE (With Statistics)
+// EMAIL SCANNER SERVICE (Thread-Safe Instance)
 // ====================================================================================================
 
 class EmailScannerService final
@@ -1839,33 +1997,33 @@ private:
 public:
     EmailScannerService() = default;
 
+    // Non-copyable
     EmailScannerService(const EmailScannerService &) = delete;
     EmailScannerService &operator=(const EmailScannerService &) = delete;
 
+    // Movable
     EmailScannerService(EmailScannerService &&) noexcept = default;
     EmailScannerService &operator=(EmailScannerService &&) noexcept = default;
 
     [[nodiscard]] bool contains(std::string_view text) noexcept
     {
         stats_.recordScan();
-
-        bool result = EmailScanner::contains(text);
-
+        const bool result = EmailScanner::contains(text);
         if (!result)
+        {
             stats_.recordError();
-
+        }
         return result;
     }
 
     [[nodiscard]] std::vector<std::string> extract(std::string_view text) noexcept
     {
         stats_.recordExtract();
-
         auto result = EmailScanner::extract(text);
-
         if (result.empty())
+        {
             stats_.recordError();
-
+        }
         return result;
     }
 
@@ -1881,13 +2039,17 @@ public:
 };
 
 // ====================================================================================================
-// FACTORY (Dependency Inversion Principle)
+// FACTORY (Thread-Safe Service Creation)
 // ====================================================================================================
 
-class EmailServiceFactory
+class EmailServiceFactory final
 {
 public:
-    // Create service instances with independent statistics
+    // Deleted - static-only class
+    EmailServiceFactory() = delete;
+    ~EmailServiceFactory() = delete;
+
+    // Create independent service instances
     [[nodiscard]] static EmailValidationService createValidationService()
     {
         return EmailValidationService{};
@@ -1898,7 +2060,7 @@ public:
         return EmailScannerService{};
     }
 
-    // Get thread-local service instances (for convenience)
+    // Thread-local singleton access (for convenience in multi-threaded contexts)
     [[nodiscard]] static EmailValidationService &getThreadLocalValidationService()
     {
         thread_local EmailValidationService instance;
@@ -2567,9 +2729,6 @@ public:
         std::cout << "=== COMPREHENSIVE PERFORMANCE BENCHMARK ===\n";
         std::cout << std::string(100, '=') << "\n";
 
-        EmailValidator validator;
-        EmailScanner scanner;
-
         std::vector<std::string> testCases = {
             "Simple email: user@example.com in text",
             "Multiple emails: first@domain.com and second@another.org",
@@ -2686,14 +2845,13 @@ public:
                 threads.emplace_back(
                     [&testCases, &validCount, iterationsPerThread]()
                     {
-                        EmailValidator localValidator;
                         long long localValid = 0;
 
                         for (int i = 0; i < iterationsPerThread; ++i)
                         {
                             for (const auto &test : testCases)
                             {
-                                if (localValidator.isValid(test))
+                                if (EmailValidator::isValid(test))
                                 {
                                     ++localValid;
                                 }
@@ -2738,14 +2896,13 @@ public:
                 threads.emplace_back(
                     [&testCases, &foundCount, iterationsPerThread]()
                     {
-                        EmailScanner localScanner;
                         long long localFound = 0;
 
                         for (int i = 0; i < iterationsPerThread; ++i)
                         {
                             for (const auto &test : testCases)
                             {
-                                if (localScanner.contains(test))
+                                if (EmailScanner::contains(test))
                                 {
                                     ++localFound;
                                 }
@@ -2790,14 +2947,13 @@ public:
                 threads.emplace_back(
                     [&testCases, &extractedCount, iterationsPerThread]()
                     {
-                        EmailScanner localScanner;
                         long long localExtracted = 0;
 
                         for (int i = 0; i < iterationsPerThread; ++i)
                         {
                             for (const auto &test : testCases)
                             {
-                                auto emails = localScanner.extract(test);
+                                auto emails = EmailScanner::extract(test);
                                 localExtracted += emails.size();
                             }
                         }
@@ -2840,8 +2996,6 @@ public:
                 threads.emplace_back(
                     [&testCases, &totalOperations, iterationsPerThread]()
                     {
-                        EmailValidator localValidator;
-                        EmailScanner localScanner;
                         long long localOps = 0;
 
                         for (int i = 0; i < iterationsPerThread; ++i)
@@ -2849,14 +3003,14 @@ public:
                             for (const auto &test : testCases)
                             {
                                 // Real-world pattern: check first, extract if found
-                                if (localScanner.contains(test))
+                                if (EmailScanner::contains(test))
                                 {
-                                    auto emails = localScanner.extract(test);
+                                    auto emails = EmailScanner::extract(test);
                                     localOps += emails.size();
                                 }
 
                                 // Or validate exact emails
-                                if (localValidator.isValid(test))
+                                if (EmailValidator::isValid(test))
                                 {
                                     ++localOps;
                                 }
