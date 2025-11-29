@@ -26,36 +26,78 @@ A **production-grade email detection library** written in modern C++ with perfor
 
 ## 🔧 Build Instructions
 
-### Optimized Build (Recommended for Production)
+You can build the project using **Make** (recommended), **CMake**, or **Manual Compilation**.
 
-For maximum performance with aggressive optimizations:
+### Option 1: Using Makefile (Recommended)
 
-#### GCC 
-**For development:**
+The included `Makefile` handles OS detection (Windows/Linux/macOS) and optimization flags automatically.
+
+#### 1\. Debug Build (Default)
+
+Best for development and debugging (includes symbols `-g`, disables optimizations `-O0`).
+
 ```bash
-g++ -O3 -march=native -std=c++17 -pthread EmailDetector.cpp -o EmailDetector
+make
+# OR
+make build
 ```
 
-#### GCC 
-**For production/benchmarking:**
+#### 2\. Release Build (High Performance)
+
+Best for production. Uses `-O3`, `-march=native`, and Link Time Optimization (`-flto`).
+
 ```bash
-g++ -O3 -march=native -flto=auto -DNDEBUG -std=c++17 -pthread EmailDetector.cpp -o EmailDetector
+make build_release
 ```
 
-#### Clang
+#### 3\. CMake via Makefile
+
+If you prefer using the CMake build system but want to trigger it via Make:
+
 ```bash
-clang++ -O3 -march=native -std=c++17 -pthread EmailDetector.cpp -o EmailDetector
+# Debug CMake build
+make build_cmake
+
+# Release CMake build
+make build_release_cmake
 ```
 
-#### With Link-Time Optimization (even faster)
+#### 4\. Cleaning Up
+
+Removes binaries and build artifacts.
+
 ```bash
-g++ -O3 -march=native -flto -std=c++17 -pthread EmailDetector.cpp -o EmailDetector
+make clean
+```
+
+-----
+
+### Option 2: Manual Compilation
+
+If you do not have `make` installed, you can compile manually.
+
+#### GCC / Clang (For development)
+```bash
+# For GCC Compiler
+g++ -O3 -march=native -std=c++23 -pthread EmailDetector.cpp -o EmailDetector
+
+# For CLANG Compiler
+clang++ -O3 -march=native -std=c++23 -pthread EmailDetector.cpp -o EmailDetector
+```
+
+#### GCC / Clang (For production/benchmarking)
+```bash
+# For GCC Compiler
+g++ -O3 -march=native -flto=auto -DNDEBUG -std=c++23 -pthread EmailDetector.cpp -o EmailDetector
+
+# For CLANG Compiler
+clang++ -O3 -march=native -flto=auto -DNDEBUG -std=c++23 -pthread EmailDetector.cpp -o EmailDetector
 ```
 
 **Compiler Flags Explained:**
 - `-O3` – Maximum optimization level (~20x speedup)
 - `-march=native` – CPU-specific optimizations (SIMD, AVX)
-- `-std=c++17` – C++17 standard support
+- `-std=c++23` – C++23 standard support
 - `-pthread` – POSIX threading support
 - `-flto` – Link-time optimization (optional, slower compile)
 
@@ -68,7 +110,7 @@ g++ -O3 -march=native -flto -std=c++17 -pthread EmailDetector.cpp -o EmailDetect
 For development and debugging:
 
 ```bash
-g++ -g -std=c++17 -pthread EmailDetector.cpp -o EmailDetector
+g++ -g -std=c++23 -pthread EmailDetector.cpp -o EmailDetector
 ```
 
   * `-g` – Includes debugging information in the binary for use with tools like GDB.
@@ -86,17 +128,31 @@ g++ -g -std=c++17 -pthread EmailDetector.cpp -o EmailDetector
 
 ## ▶️ Running the Program
 
-### Linux/macOS
+### Using Makefile
+
+The Makefile automatically handles the executable extension (`.exe`) and path separators for your OS.
+
+```bash
+# Run the standard/debug build
+make run
+
+# Run the release build (specifically targeted to the build/release folder)
+make run_release_cmake
+```
+
+### Manual Execution
+
+#### Linux/macOS
 ```bash
 ./EmailDetector
 ```
 
-### Windows (PowerShell)
+#### Windows (PowerShell)
 ```powershell
 ./EmailDetector.exe
 ```
 
-### Windows (CMD)
+#### Windows (CMD)
 ```cmd
 EmailDetector.exe
 ```
@@ -131,7 +187,7 @@ Full RFC 5322 compliance with quoted strings, IP literals, etc.
 Γ£ô Invalid IPv4 (octet = 256): "user@[192.168.1.256]"
 Γ£ô Invalid IPv6 (bad hex): "user@[gggg::1]"
 
-Result: 63/63 passed (100%)
+Result: 109/109 passed (100%)
 
 ====================================================================================================
 
@@ -198,7 +254,7 @@ Conservative validation for PII detection
   Input: "Really? user@example.com?"
   Found: user@example.com
 
-Result: 235/235 passed (100%)
+Result: 244/244 passed (100%)
 
 ====================================================================================================
 
@@ -254,38 +310,38 @@ Configuration:
 ----------------------------------------------------------------------------------------------------
 BENCHMARK 1: isValid() - Exact Email Validation
 ----------------------------------------------------------------------------------------------------
-Time: 704 ms
+Time: 614 ms
 Operations: 128000000
-Throughput: 181818181 ops/sec
+Throughput: 208469055 ops/sec
 Valid emails found: 59200000
-Avg latency: 5.5 ns/op
+Avg latency: 4.79688 ns/op
 
 ----------------------------------------------------------------------------------------------------
 BENCHMARK 2: contains() - Fast Email Detection
 ----------------------------------------------------------------------------------------------------
-Time: 887 ms
+Time: 1170 ms
 Operations: 128000000
-Throughput: 144306651 ops/sec
-Texts with emails: 84800000
-Avg latency: 6.92969 ns/op
+Throughput: 109401709 ops/sec
+Texts with emails: 86400000
+Avg latency: 9.14062 ns/op
 
 ----------------------------------------------------------------------------------------------------
 BENCHMARK 3: extract() - Full Email Extraction
 ----------------------------------------------------------------------------------------------------
-Time: 4227 ms
+Time: 4678 ms
 Operations: 128000000
-Throughput: 30281523 ops/sec
-Emails extracted: 92800000
-Avg latency: 33.0234 ns/op
+Throughput: 27362120 ops/sec
+Emails extracted: 94400000
+Avg latency: 36.5469 ns/op
 
 ----------------------------------------------------------------------------------------------------
 BENCHMARK 4: Combined Workload (Real-world)
 ----------------------------------------------------------------------------------------------------
-Time: 6661 ms
+Time: 7345 ms
 Operations: 128000000
-Throughput: 19216333 ops/sec
-Results produced: 152000000
-Avg latency: 52.0391 ns/op
+Throughput: 17426820 ops/sec
+Results produced: 153600000
+Avg latency: 57.3828 ns/op
 
 ====================================================================================================
 Γ£ô Performance Benchmark Complete
@@ -335,14 +391,14 @@ The program includes built-in tests:
 The optimized build uses `-march=native`, which generates code for **your specific CPU**. The binary may not run on older/different processors. For portable binaries, use:
 
 ```bash
-g++ -O3 -std=c++17 -pthread EmailDetector.cpp -o EmailDetector
+g++ -O3 -std=c++23 -pthread EmailDetector.cpp -o EmailDetector
 ```
 
 ### Windows MinGW Users
 If `-pthread` causes errors on Windows, you can omit it:
 
 ```bash
-g++ -O3 -march=native -std=c++17 EmailDetector.cpp -o EmailDetector
+g++ -O3 -march=native -std=c++23 EmailDetector.cpp -o EmailDetector
 ```
 
 ---
